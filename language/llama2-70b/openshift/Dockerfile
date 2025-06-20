@@ -48,7 +48,7 @@ RUN conda create -n llama2-70b python=3.10
 RUN chmod -R 777 /opt/miniconda3
 
 WORKDIR /work
-COPY ./loadgen /work
+COPY ./loadgen /work/loadgen
 
 RUN pip install ./loadgen
 RUN pip install requests numpy torch transformers more_itertools datasets sentencepiece protobuf nltk evaluate
