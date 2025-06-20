@@ -15,6 +15,7 @@ import threading
 import tqdm
 import queue
 
+import sys
 import logging
 from typing import TYPE_CHECKING, Optional, List
 from pathlib import Path
@@ -100,6 +101,7 @@ class SUT:
         total_sample_count=24576,
         dataset_path=None,
         use_cached_outputs=False,
+        additional_servers=[],
         # Set this to True *only for test accuracy runs* in case your prior
         # session was killed partway through
         workers=1,
@@ -110,6 +112,11 @@ class SUT:
         self.api_servers = []
         if api_server:
             self.api_servers.append(api_server)
+        if additional_servers and api_server:
+            for server in additional_servers:
+                self.api_servers.append(server)
+        else:
+            sys.exit("Error: additional_servers provided without api_server")
         self.api_model_name = api_model_name
         self.device = device
 

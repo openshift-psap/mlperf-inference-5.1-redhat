@@ -127,6 +127,12 @@ def get_args():
         choices=["llama2-70b", "llama2-70b-interactive"],
         help="Model name(specified in llm server)",
     )
+    parser.add_argument(
+        "--additional-servers",
+        type=list,
+        default=[],
+        help="Specify additional api endpoints to use api mode",
+    )
     args = parser.parse_args()
     return args
 
