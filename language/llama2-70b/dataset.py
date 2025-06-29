@@ -3,7 +3,7 @@ import os
 import time
 import numpy as np
 import torch
-#from datasets import load_dataset, load_from_disk
+from datasets import load_dataset, load_from_disk
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.nn.functional import pad
 from torch.utils.data import DataLoader
@@ -73,16 +73,12 @@ class Dataset:
         self.attention_masks = []
 
         for ids in input_tokens:
-            """
             input_ids = torch.tensor(ids, dtype=torch.int32).view(
                 1, -1).to(self.device)
             attn_mask = torch.ones_like(input_ids)
             self.input_ids.append(input_ids)
             self.attention_masks.append(attn_mask)
             self.input_lens.append(input_ids.shape[-1])
-            """
-            self.input_ids.append(ids)
-            self.input_lens.append(len(ids))
         print("Finished loading dataset.")
 
     def postProcess(
