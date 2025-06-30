@@ -9,6 +9,8 @@ import math # For ceil in batching
 from dataset import Dataset
 from vllm import TokensPrompt
 import logging
+import array # For converting token IDs to bytes
+import numpy as np # For proper token ID conversion
 
 # Attempt to import vLLM. If not found, provide a clear message.
 try:
@@ -28,6 +30,23 @@ except ImportError:
     print("Example: pip install -e inference/loadgen")
     exit(1)
 
+# Attempt to import NVTX for profiling
+nvtx = None
+def setup_nvtx(enable_nvtx):
+    """Setup NVTX based on command line option"""
+    global nvtx
+    if enable_nvtx:
+        try:
+            import nvtx
+            print("NVTX enabled for profiling")
+            return nvtx
+        except ImportError:
+            print("NVTX is not installed. NVTX markers will be disabled.")
+            print("Please install it using: pip install nvtx")
+            return None
+    else:
+        print("NVTX disabled via command line option")
+        return None
 
 def load_samples_to_ram(query_samples):
     """
@@ -74,7 +93,8 @@ def vllm_worker_process(
     gpu_memory_utilization: float,
     ready_event: Event,
     max_model_len: int = None,
-    max_num_seqs: int = 512
+    max_num_seqs: int = 512,
+    test_mode: str = "performance"
 ) -> None:
     """
     Function to be run by each separate process for vLLM text generation.
@@ -125,6 +145,7 @@ def vllm_worker_process(
             #stop=["\n\n", "User:", "###", "Human:"],
         )
 
+        batch_counter = 0
         while True:
             # Get a BATCH of QuerySample data from its dedicated input queue
             # This will be a list of dictionaries, where each dict has "query_id" and "prompt_text"
@@ -133,6 +154,13 @@ def vllm_worker_process(
             if batch_of_query_data == "STOP":
                 logging.info(f"Process {process_id}: Received STOP signal. Shutting down.")
                 break
+
+            batch_counter += 1
+            batch_label = f"batch_{batch_counter}_process_{process_id}"
+            
+            # NVTX marker for batch start
+            if nvtx:
+                nvtx.mark(f"batch_begin_{batch_label}")
 
             # Extract prompts and original query_ids for the batch
             prompts_to_process = [TokensPrompt(prompt_token_ids=item["prompt_text"]) for item in batch_of_query_data]
@@ -155,12 +183,13 @@ def vllm_worker_process(
                 # Process each output in the batch and prepare for reporting
                 for i, output in enumerate(outputs):
                     generated_text = output.outputs[0].text
-                    token_count = len(output.outputs[0].token_ids)
+                    token_ids = output.outputs[0].token_ids
+                    token_count = len(token_ids)
                     current_query_id = original_query_ids[i]
-                    print(f"Process {process_id}: Generated text: {generated_text}")
+                    logging.debug(f"Process {process_id}: Generated text: {generated_text}")
 
                     # Prepare response data for the collector thread
-                    batch_responses.append({
+                    response_data = {
                         "process_id": process_id,
                         "query_id": current_query_id,
                         "generated_text": generated_text, # For debugging/logging in collector
@@ -168,7 +197,18 @@ def vllm_worker_process(
                         "duration": batch_duration, # Total batch duration
                         "cuda_device_used": cuda_device_ids,
                         "status": "success"
-                    })
+                    }
+                    
+                    # Only include token data in accuracy mode for performance optimization
+                    if test_mode == "accuracy":
+                        # Convert token IDs to bytes for LoadGen accuracy testing
+                        # Convert to numpy int32 array then to bytes (standard MLPerf practice)
+                        token_array = np.array(token_ids, dtype=np.int32)
+                        token_bytes = token_array.tobytes()
+                        response_data["token_ids"] = token_ids  # Raw token IDs for reference
+                        response_data["token_bytes"] = token_bytes  # Token IDs as bytes for LoadGen
+                    
+                    batch_responses.append(response_data)
                 
                 # Send the entire list of responses for this batch to the output queue
                 output_queue.put(batch_responses)
@@ -189,6 +229,10 @@ def vllm_worker_process(
                     })
                 output_queue.put(batch_error_responses)
             finally:
+                # NVTX marker for batch end
+                if nvtx:
+                    nvtx.mark(f"batch_end_{batch_label}")
+                
                 # Decrement load after processing the entire batch
                 worker_status[process_id] = worker_status[process_id] - len(prompts_to_process)
                 ready_event.set()
@@ -204,7 +248,8 @@ def vllm_worker_process(
 # --- System Under Test (SUT) Class for MLPerf Loadgen ---
 class VLLMSchedulingSUT:
     def __init__(self, num_replicas: int, num_gpus: int, model_name: str, dataset_path: str, 
-                 scheduling_policy: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512):
+                 scheduling_policy: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, 
+                 max_num_seqs: int = 512, test_mode: str = "performance"):
         self.num_replicas = num_replicas
         self.num_gpus = num_gpus
         self.model_name = model_name
@@ -213,7 +258,8 @@ class VLLMSchedulingSUT:
         self.max_model_len = max_model_len
         self.gpu_memory_utilization = gpu_memory_utilization
         self.max_num_seqs = max_num_seqs
-        self.gpus_per_replica = self.num_gpus // self.num_replicas 
+        self.test_mode = test_mode
+        self.gpus_per_replica = self.num_gpus // self.num_replicas
 
         # Multiprocessing components
         self.manager = Manager()
@@ -250,9 +296,7 @@ class VLLMSchedulingSUT:
             start_global_gpu_id = i * self.gpus_per_replica
             assigned_cuda_device_ids = list(range(start_global_gpu_id, start_global_gpu_id + self.gpus_per_replica))
             
-            # Heuristic for GPU memory utilization: If multiple processes share a single GPU,
-            # divide the memory. Otherwise, assume full utilization per GPU for dedicated GPUs.
-            #gpu_mem_util = 0.9 if self.num_gpus >= self.num_replicas else (0.9 / self.num_replicas)
+    
 
             process = Process(
                 target=vllm_worker_process,
@@ -266,7 +310,8 @@ class VLLMSchedulingSUT:
                     self.gpu_memory_utilization,
                     ready_e,
                     self.max_model_len,
-                    self.max_num_seqs
+                    self.max_num_seqs,
+                    self.test_mode
                 )
             )
             self.processes.append(process)
@@ -328,7 +373,22 @@ class VLLMSchedulingSUT:
                             continue # Skip reporting this specific item as a Loadgen completion
 
                         # Create a Loadgen QuerySampleResponse for each item in the batch
-                        response = lg.QuerySampleResponse(query_id, 0,0, token_count) # data=0 for performance
+                        if result_data.get("status") == "success":
+                            if self.test_mode == "accuracy":
+                                # For accuracy mode, include token bytes for accuracy testing
+                                token_bytes = result_data.get("token_bytes", b"")
+                                # Convert bytes back to numpy array for proper memory management
+                                token_array = np.frombuffer(token_bytes, dtype=np.int32)
+                                response_data = token_array.ctypes.data
+                                response_size = len(token_bytes)
+                                response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+                            else:
+                                # For performance mode, create response with no data for better performance
+                                response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
+                        else:
+                            # For errors, create response with no data
+                            response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
+                        
                         responses_to_loadgen.append(response)
 
                         if result_data.get("status") == "error":
@@ -480,7 +540,7 @@ if __name__ == "__main__":
         "--dataset_path",
         type=str,
         default=None,
-        help="Path to the dataset"
+        help="Path to the processed dataset pickle file containing tokenized inputs"
     )
     parser.add_argument(
         "--model_name",
@@ -492,19 +552,19 @@ if __name__ == "__main__":
         "--max_model_len",
         type=int,
         default=2048,
-        help="Optional: Maximum sequence length for the model. Adjust based on model capabilities and memory."
+        help="Maximum sequence length for the model. Adjust based on model capabilities and available GPU memory"
     )
     parser.add_argument(
         "--max_num_seqs",
         type=int,
         default=512,
-        help="Optional: Maximum sequence length for the model. Adjust based on model capabilities and memory."
+        help="Maximum number of sequences that can be processed simultaneously by vLLM"
     )
     parser.add_argument(
         "--gpu_mem_util",
         type=float,
         default=0.9,
-        help="Optional: Maximum sequence length for the model. Adjust based on model capabilities and memory."
+        help="GPU memory utilization factor (0.0 to 1.0) for vLLM model loading"
     )
     parser.add_argument(
         "--log_level",
@@ -550,7 +610,49 @@ if __name__ == "__main__":
         "--output-log-dir", type=str, default="output-logs", help="Where logs are saved"
     )
 
+    parser.add_argument(
+        "--enable-nvtx",
+        action="store_true",
+        help="Enable NVTX markers for profiling batch processing"
+    )
+
+    parser.add_argument(
+        "--help-args",
+        action="store_true",
+        help="Show detailed help for all command line arguments"
+    )
+
+    parser.add_argument(
+        "--test-mode",
+        type=str,
+        default="performance",
+        choices=["performance", "accuracy"],
+        help="Test mode: 'performance' for performance testing, 'accuracy' for accuracy testing with raw bytes logging"
+    )
+
     args = parser.parse_args()
+
+    # Show detailed help if requested
+    if args.help_args:
+        print("\n" + "="*80)
+        print("DETAILED COMMAND LINE ARGUMENTS")
+        print("="*80)
+        parser.print_help()
+        print("\n" + "="*80)
+        print("EXAMPLES:")
+        print("="*80)
+        print("Basic run with 2 GPUs and 2 replicas:")
+        print("  python SUT_VLLM.py --num_gpus 2 --num_replicas 2 --dataset_path /path/to/dataset.pkl")
+        print("\nRun with NVTX profiling enabled:")
+        print("  python SUT_VLLM.py --enable-nvtx --num_gpus 4 --num_replicas 2")
+        print("\nRun with custom batch size and GPU memory utilization:")
+        print("  python SUT_VLLM.py --batch_size 2048 --gpu_mem_util 0.8 --max_num_seqs 256")
+        print("\nRun with specific model and dataset:")
+        print("  python SUT_VLLM.py --model_name meta-llama/Llama-2-70b-chat-hf --dataset_path /path/to/dataset.pkl")
+        print("\nRun in accuracy mode with raw bytes logging:")
+        print("  python SUT_VLLM.py --test-mode accuracy --dataset_path /path/to/dataset.pkl")
+        print("="*80)
+        exit(0)
 
     # --- Logging Configuration ---
     logging.basicConfig(
@@ -572,6 +674,11 @@ if __name__ == "__main__":
     BATCH_SIZE = args.batch_size
     VLLM_API = args.vllm_api
     API_SERVERS = args.api_servers.split(',') if args.api_servers else []
+    ENABLE_NVTX = args.enable_nvtx
+    TEST_MODE = args.test_mode
+    
+    # Setup NVTX if enabled
+    nvtx = setup_nvtx(ENABLE_NVTX)
     
     #Trying with dataset
 
@@ -584,8 +691,6 @@ if __name__ == "__main__":
     if NUM_SAMPLES <= 0:
         logging.error("Error: Number of samples (--num_samples) must be at least 1.")
         exit(1)
-
-
 
 
     logging.info("-" * 50)
@@ -601,15 +706,19 @@ if __name__ == "__main__":
             scheduling_policy=SCHEDULING_POLICY,
             max_model_len=MAX_MODEL_LEN,
             gpu_memory_utilization=GPU_MEM_UTIL,
-            max_num_seqs=MAX_NUM_SEQS
+            max_num_seqs=MAX_NUM_SEQS,
+            test_mode=TEST_MODE
         )
 
         # --- MLPerf Loadgen Setup ---
         settings = lg.TestSettings()
         settings.scenario = lg.TestScenario.Offline
-        settings.mode = lg.TestMode.PerformanceOnly
+        if TEST_MODE == "accuracy":
+            settings.mode = lg.TestMode.AccuracyOnly
+        else:
+            settings.mode = lg.TestMode.PerformanceOnly
         settings.use_token_latencies = True
-        logging.info("This may take some time as vLLM models are loaded in each process.")
+        logging.info(f"This may take some time as vLLM models are loaded in each process. Test mode: {TEST_MODE}")
         settings.FromConfig(args.user_conf,args.lg_model_name,"Offline")
         log_output_settings = lg.LogOutputSettings()
         log_output_settings.outdir = args.output_log_dir
@@ -617,7 +726,6 @@ if __name__ == "__main__":
         log_settings = lg.LogSettings()
         log_settings.log_output = log_output_settings
         log_settings.enable_trace = False
-
 
         # Construct QSL and SUT for Loadgen.
         # Loadgen will call get_query_samples to get individual data elements,
@@ -633,14 +741,16 @@ if __name__ == "__main__":
             unload_samples_from_ram # Callback to unload data
         )
 
- 
-        
         # SUT for Loadgen: The `issue_query` callback is from our VLLMSchedulingSUT instance
         # The `flush_queries` callback is also from our VLLMSchedulingSUT instance
         SUTToTest = lg.ConstructSUT(sut.issue_query, sut.flush_queries)
 
         logging.info(f"MLPerf Loadgen: Starting test with {NUM_SAMPLES} samples in Offline mode...")
-        logging.info(f"Model: {MODEL_NAME}, Processes: {NUM_REPLICAS}, GPUs: {NUM_GPUS}, Policy: {SCHEDULING_POLICY}")
+        logging.info(f"Model: {MODEL_NAME}, Processes: {NUM_REPLICAS}, GPUs: {NUM_GPUS}, Policy: {SCHEDULING_POLICY}, Test Mode: {TEST_MODE}")
+        if TEST_MODE == "accuracy":
+            logging.info("Token data will be included in responses for accuracy testing")
+        else:
+            logging.info("Performance mode: Token data excluded for optimal performance")
 
         lg.StartTestWithLogSettings(SUTToTest, qsl, settings,log_settings)
 
