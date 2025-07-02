@@ -526,7 +526,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--scheduling_policy",
         type=str,
-        default="least_load", # Note: Policy is less relevant now as samples are batched once upfront
+        default="round_robin", # Note: Policy is less relevant now as samples are batched once upfront
         choices=["first_come_first_served", "least_load", "round_robin"],
         help="Scheduling policy for distributing prompts to workers in SUT (primarily impacts how batches are assigned)."
     )
@@ -607,7 +607,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--output-log-dir", type=str, default="output-logs", help="Where logs are saved"
+        "--output-log-dir", type=str, default="./", help="Where logs are saved"
     )
 
     parser.add_argument(
