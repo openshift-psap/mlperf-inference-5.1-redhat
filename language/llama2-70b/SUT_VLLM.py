@@ -11,6 +11,9 @@ from vllm import TokensPrompt
 import logging
 import array # For converting token IDs to bytes
 import numpy as np # For proper token ID conversion
+import sys
+import pkg_resources
+from datetime import datetime   
 
 # Attempt to import vLLM. If not found, provide a clear message.
 try:
@@ -94,7 +97,8 @@ def vllm_worker_process(
     ready_event: Event,
     max_model_len: int = None,
     max_num_seqs: int = 512,
-    test_mode: str = "performance"
+    test_mode: str = "performance",
+    cuda_arch_version: str = "8.9"
 ) -> None:
     """
     Function to be run by each separate process for vLLM text generation.
@@ -104,8 +108,12 @@ def vllm_worker_process(
     # --- IMPORTANT: Set CUDA_VISIBLE_DEVICES for THIS process ---
     os.environ['CUDA_VISIBLE_DEVICES'] = ",".join(map(str, cuda_device_ids))
     os.environ['VLLM_CONFIGURE_LOGGING'] = "0"
+    # Set CUDA arch and OMP threads
+    os.environ['TORCH_CUDA_ARCH_LIST'] = cuda_arch_version
+    os.environ['OMP_NUM_THREADS'] = "16"
     #os.environ['VLLM_LOGGING_LEVEL'] = "DEBUG"
     logging.info(f"Process {process_id}: Configured to use CUDA device: {os.environ['CUDA_VISIBLE_DEVICES']}")
+    logging.info(f"Process {process_id}: Set TORCH_CUDA_ARCH_LIST={cuda_arch_version}, OMP_NUM_THREADS=16")
 
     logging.info(f"Process {process_id}: Starting to load model '{model_name}'...")
     try:
@@ -244,12 +252,11 @@ def vllm_worker_process(
         # If setup fails, send a special message to the output queue for the collector to handle
         output_queue.put([{"process_id": process_id, "setup_error": str(e), "cuda_device_attempted": cuda_device_ids, "status": "critical_error"}])
 
-
 # --- System Under Test (SUT) Class for MLPerf Loadgen ---
 class VLLMSchedulingSUT:
     def __init__(self, num_replicas: int, num_gpus: int, model_name: str, dataset_path: str, 
                  scheduling_policy: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, 
-                 max_num_seqs: int = 512, test_mode: str = "performance"):
+                 max_num_seqs: int = 512, test_mode: str = "performance", cuda_arch_version: str = "8.9"):
         self.num_replicas = num_replicas
         self.num_gpus = num_gpus
         self.model_name = model_name
@@ -260,6 +267,7 @@ class VLLMSchedulingSUT:
         self.max_num_seqs = max_num_seqs
         self.test_mode = test_mode
         self.gpus_per_replica = self.num_gpus // self.num_replicas
+        self.cuda_arch_version = cuda_arch_version
 
         # Multiprocessing components
         self.manager = Manager()
@@ -274,13 +282,23 @@ class VLLMSchedulingSUT:
         self.data_object = Dataset(self.model_name,dataset_path=self.dataset_path,total_sample_count=24576,device="cpu")
 
         #Make this a function to print any dataset related information 
-        logging.info("Datatset = %d", len(self.data_object.input_ids) )
-        logging.info("Datatset Max = %d", max(self.data_object.input_lens)) 
-        logging.info("Datatset Min = %d", min(self.data_object.input_lens)) 
-        logging.info("Datatset Len = %d", len(self.data_object.input_lens)) 
+        print("="*80)
+        print("Dataset Information")
+        logging.info("Dataset Max Tokens    = %d", max(self.data_object.input_lens)) 
+        logging.info("Dataset Min Tokens    = %d", min(self.data_object.input_lens)) 
+        logging.info("Dataset Total Samples = %d", sum(self.data_object.input_lens)) 
+        print("="*80)
 
         self._start_workers()
+        print("="*80)
+        print("LOAD MODELS BEGIN")
+        print("="*80)
         self._wait_for_replicas_to_load_models()
+        print("="*80)
+        print("LOAD MODELS END")
+        print("="*80)
+
+
         self._start_result_collector() # Start a thread to continuously collect results
 
     def _start_workers(self):
@@ -311,7 +329,8 @@ class VLLMSchedulingSUT:
                     ready_e,
                     self.max_model_len,
                     self.max_num_seqs,
-                    self.test_mode
+                    self.test_mode,
+                    self.cuda_arch_version
                 )
             )
             self.processes.append(process)
@@ -507,6 +526,29 @@ class VLLMSchedulingSUT:
 # --- Main Program ---
 if __name__ == "__main__":
 
+    # Print command line and executable information
+    import sys
+    print("="*80)
+    print("COMMAND LINE AND EXECUTABLE INFORMATION")
+    print("="*80)
+    print(f"Executable: {sys.executable}")
+    print(f"Command line: {' '.join(sys.argv)}")
+    print("="*80)
+    print()
+
+    # Print date and time
+    now = datetime.now()
+    print(f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*80)
+    # Print installed packages
+    print("Installed Python packages:")
+    pkgs = sorted([(d.project_name, d.version) for d in pkg_resources.working_set], key=lambda x: x[0].lower())
+    for name, version in pkgs:
+        print(f"  {name:<30} {version}")
+    print("="*80)
+    print()
+
+
     parser = argparse.ArgumentParser(
         description="Run vLLM generation with MLPerf Loadgen in offline scenario.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -590,14 +632,12 @@ if __name__ == "__main__":
         default=None,
         help="Comma-separated list of API server URLs (future use)."
     )
-
     parser.add_argument(
         "--user-conf",
         type=str,
         default="user.conf",
         help="user config for user LoadGen settings such as target QPS",
     )
-
     parser.add_argument(
         "--lg_model_name",
         type=str,
@@ -605,29 +645,32 @@ if __name__ == "__main__":
         choices=["llama2-70b", "llama2-70b-interactive","test-model"],
         help="Model name(specified in llm server)",
     )
-
     parser.add_argument(
         "--output-log-dir", type=str, default="./", help="Where logs are saved"
     )
-
     parser.add_argument(
         "--enable-nvtx",
         action="store_true",
         help="Enable NVTX markers for profiling batch processing"
     )
-
     parser.add_argument(
         "--help-args",
         action="store_true",
         help="Show detailed help for all command line arguments"
     )
-
     parser.add_argument(
         "--test-mode",
         type=str,
         default="performance",
         choices=["performance", "accuracy"],
         help="Test mode: 'performance' for performance testing, 'accuracy' for accuracy testing with raw bytes logging"
+    )
+    parser.add_argument(
+        "--cuda-arch-version",
+        type=str,
+        default="8.9",
+        choices=["8.9", "9.0"],
+        help="CUDA arch version for TORCH_CUDA_ARCH_LIST (default: 8.9)"
     )
 
     args = parser.parse_args()
@@ -676,6 +719,7 @@ if __name__ == "__main__":
     API_SERVERS = args.api_servers.split(',') if args.api_servers else []
     ENABLE_NVTX = args.enable_nvtx
     TEST_MODE = args.test_mode
+    CUDA_ARCH_VERSION = args.cuda_arch_version
     
     # Setup NVTX if enabled
     nvtx = setup_nvtx(ENABLE_NVTX)
@@ -707,7 +751,8 @@ if __name__ == "__main__":
             max_model_len=MAX_MODEL_LEN,
             gpu_memory_utilization=GPU_MEM_UTIL,
             max_num_seqs=MAX_NUM_SEQS,
-            test_mode=TEST_MODE
+            test_mode=TEST_MODE,
+            cuda_arch_version=CUDA_ARCH_VERSION
         )
 
         # --- MLPerf Loadgen Setup ---
