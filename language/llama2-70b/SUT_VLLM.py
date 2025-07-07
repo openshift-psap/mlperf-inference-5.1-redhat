@@ -286,7 +286,7 @@ class VLLMSchedulingSUT:
         print("Dataset Information")
         logging.info("Dataset Max Tokens    = %d", max(self.data_object.input_lens)) 
         logging.info("Dataset Min Tokens    = %d", min(self.data_object.input_lens)) 
-        logging.info("Dataset Total Samples = %d", sum(self.data_object.input_lens)) 
+        logging.info("Dataset Total Samples = %d", len(self.data_object.input_lens)) 
         print("="*80)
 
         self._start_workers()
