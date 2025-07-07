@@ -135,9 +135,14 @@ class VLLMSingleSUT:
                 
                 # Use PyTorch record function to mark this batch
                 batch_label = f"batch_{self.batch_counter:04d}_size_{len(batch)}"
+                # Only profile if enabled
+                if self.enable_profiler:
+                    self.llm.start_profile()
                 with torch.profiler.record_function(batch_label):
                     outputs = self.llm.generate(prompts_to_process, self.sampling_params)
                 
+                if self.enable_profiler:
+                    self.llm.stop_profile()
                 #if self.enable_nvtx and nvtx:
                 #    nvtx.pop_range()
                 if self.enable_nvtx:
@@ -235,6 +240,9 @@ if __name__ == "__main__":
     parser.add_argument("--profiler-dir", type=str, default="./torch_profiler_logs", help="Directory to save torch profiler traces")
     parser.add_argument("--enable-nvtx", action="store_true", help="Enable NVTX profiling for GPU timeline analysis")
     args = parser.parse_args()
+
+    # Set profiler directory environment variable
+    os.environ["VLLM_TORCH_PROFILER_DIR"] = args.profiler_dir
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.ERROR),
