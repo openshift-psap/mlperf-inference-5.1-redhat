@@ -10,6 +10,8 @@ import sys
 import torch
 import pkg_resources
 from datetime import datetime
+from vllm.v1.metrics.reader import Counter, Gauge, Histogram, Vector
+
 
 
 #os.environ["VLLM_TORCH_PROFILER_DIR"] = "./PROFILESFRESH"
@@ -80,7 +82,8 @@ class VLLMSingleSUT:
             max_model_len=self.max_model_len,
             max_num_seqs=self.max_num_seqs,
             pipeline_parallel_size=self.pipeline_parallel_size,
-            swap_space=self.swap_space
+            swap_space=self.swap_space,
+            disable_log_stats=False
         )
         logging.info("Model loaded successfully.")
         self.sampling_params = SamplingParams(
@@ -259,6 +262,19 @@ class VLLMSingleSUT:
             print("  Per-batch details:")
             for bt in batch_times:
                 print(f"    Batch {bt['batch_idx']:3d}: size={bt['batch_size']:4d}, duration={bt['duration']:.4f}s, llm_generate={bt['llm_generate'] if bt['llm_generate'] is not None else 'N/A'}")
+            for metric in self.llm.get_metrics():
+                        if isinstance(metric, Gauge):
+                            print(f"{metric.name} (gauge) = {metric.value}")
+                        elif isinstance(metric, Counter):
+                            print(f"{metric.name} (counter) = {metric.value}")
+                        elif isinstance(metric, Vector):
+                            print(f"{metric.name} (vector) = {metric.values}")
+                        elif isinstance(metric, Histogram):
+                            print(f"{metric.name} (histogram)")
+                            print(f"    sum = {metric.sum}")
+                            print(f"    count = {metric.count}")
+                            for bucket_le, value in metric.buckets.items():
+                                print(f"    {bucket_le} = {value}")
 
     def flush_queries(self):
         logging.info("SUT flush_queries: Flushing (no specific action for offline in this demo).")
@@ -327,6 +343,7 @@ if __name__ == "__main__":
 
     # Set profiler directory environment variable
     os.environ["VLLM_TORCH_PROFILER_DIR"] = args.profiler_dir
+    os.environ["VLLM_NO_USAGE_STATS"] = "0"
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.ERROR),

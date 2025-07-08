@@ -10,6 +10,8 @@ import sys
 import torch
 import pkg_resources
 from datetime import datetime
+from vllm.v1.metrics.reader import Counter, Gauge, Histogram, Vector
+
 
 try:
     from vllm import LLM, SamplingParams
@@ -78,7 +80,8 @@ class VLLMSingleSUT:
             max_model_len=self.max_model_len,
             max_num_seqs=self.max_num_seqs,
             pipeline_parallel_size=self.pipeline_parallel_size,
-            swap_space=self.swap_space
+            swap_space=self.swap_space,
+            disable_log_stats = False
         )
         logging.info("Model loaded successfully.")
         self.sampling_params = SamplingParams(
@@ -220,6 +223,20 @@ class VLLMSingleSUT:
                         'llm_generate': (gen_end - gen_start) if gen_start is not None and gen_end is not None else None,
                         'batch_size': len(batch)
                     })
+                    for metric in self.llm.get_metrics():
+                        if isinstance(metric, Gauge):
+                            print(f"{metric.name} (gauge) = {metric.value}")
+                        elif isinstance(metric, Counter):
+                            print(f"{metric.name} (counter) = {metric.value}")
+                        elif isinstance(metric, Vector):
+                            print(f"{metric.name} (vector) = {metric.values}")
+                        elif isinstance(metric, Histogram):
+                            print(f"{metric.name} (histogram)")
+                            print(f"    sum = {metric.sum}")
+                            print(f"    count = {metric.count}")
+                            for bucket_le, value in metric.buckets.items():
+                                print(f"    {bucket_le} = {value}")
+
             except Exception as e:
                 logging.error(f"Error processing batch: {e}")
                 for query_id in original_query_ids:
