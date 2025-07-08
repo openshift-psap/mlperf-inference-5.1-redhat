@@ -67,8 +67,8 @@ class VLLMSingleSUT:
         self._load_model()
 
     def _load_model(self):
-        #if self.enable_nvtx and nvtx:
-        #    nvtx.push_range("loadmodel")
+        if self.enable_nvtx :
+            torch.cuda.nvtx.range_push("loadmodel")
         logging.info(f"Loading model '{self.model_name}' on single GPU...")
         self.llm = LLM(
             model=self.model_name,
@@ -99,8 +99,8 @@ class VLLMSingleSUT:
             print(f"  An unexpected error occurred while dumping config: {e}")
         print("--------------END   CONFIG---------------------------\n")
 
-        #if self.enable_nvtx and nvtx:
-        #    nvtx.pop_range()
+        if self.enable_nvtx :
+            torch.cuda.nvtx.range_pop()
 
     def issue_query(self, query_samples: List['lg.QuerySample']):
         batch_size = BATCH_SIZE
@@ -174,9 +174,9 @@ class VLLMSingleSUT:
             import time
             batch_start = time.time() if self.print_timing else None
             try:
-                if self.enable_nvtx:
-                    torch.cuda.nvtx.range_push("testing")
                 batch_label = f"batch_{self.batch_counter:04d}_size_{len(batch)}"
+                if self.enable_nvtx:
+                    torch.cuda.nvtx.range_push(batch_label)
                 # Only profile if enabled
                 if self.enable_profiler:
                     self.llm.start_profile()
