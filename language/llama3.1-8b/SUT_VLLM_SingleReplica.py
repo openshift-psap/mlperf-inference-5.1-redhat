@@ -42,7 +42,7 @@ def unload_samples_from_ram(query_samples):
     return
 
 class VLLMSingleSUT:
-    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False):
+    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, print_timing: bool = False):
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.max_model_len = max_model_len
@@ -55,6 +55,9 @@ class VLLMSingleSUT:
         self.enable_profiler = enable_profiler
         self.profiler_dir = profiler_dir
         self.enable_nvtx = enable_nvtx
+        self.print_histogram = print_histogram
+        self.sort_by_length = sort_by_length
+        self.print_timing = print_timing
         self.profiler = None
         self.batch_counter = 0
         self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368)
@@ -104,7 +107,7 @@ class VLLMSingleSUT:
         total_samples = len(query_samples)
         num_batches = (total_samples + batch_size - 1) // batch_size
         logging.info(f"SUT issue_query: Received {len(query_samples)} queries from Loadgen. Batch size: {batch_size}. Number of batches: {num_batches}.")
-        
+        batch_times = []
         # Initialize profiler once for all batches if enabled
         if self.enable_profiler and self.profiler is None:
             os.makedirs(self.profiler_dir, exist_ok=True)
@@ -124,35 +127,67 @@ class VLLMSingleSUT:
             )
             self.profiler.start()
             logging.info(f"Started torch profiler for all {num_batches} batches. Trace will be saved to {trace_file}")
-        
         for batch_idx in range(num_batches):
             start = batch_idx * batch_size
             end = min((batch_idx + 1) * batch_size, total_samples)
             batch = query_samples[start:end]
+            # Optionally sort by input length
+            if self.sort_by_length:
+                batch = sorted(batch, key=lambda q: len(self.data_object.input_ids[q.index]))
             prompts_to_process = [TokensPrompt(prompt_token_ids=self.data_object.input_ids[q_sample.index]) for q_sample in batch]
             original_query_ids = [q_sample.id for q_sample in batch]
-            
+            # Optionally print histogram
+            if self.print_histogram:
+                input_lens = [len(self.data_object.input_ids[q_sample.index]) for q_sample in batch]
+                query_indexes = [q_sample.index for q_sample in batch]
+                def print_hist_int(data, title, width=50, bins=10):
+                    import numpy as np
+                    data = np.array(data, dtype=int)
+                    min_val, max_val = int(np.min(data)), int(np.max(data))
+                    if min_val == max_val:
+                        bins = 1
+                    else:
+                        bins = min(bins, max_val - min_val + 1)
+                    hist, bin_edges = np.histogram(data, bins=bins, range=(min_val, max_val+1))
+                    max_count = max(hist)
+                    print(f"Histogram of {title} (integer bins):")
+                    for i in range(len(hist)):
+                        left = int(bin_edges[i])
+                        right = int(bin_edges[i+1]) - 1
+                        bar = '#' * int(width * hist[i] / max_count) if max_count > 0 else ''
+                        print(f"  {left:6d} - {right:6d}: {bar} ({hist[i]})")
+                print_hist_int(input_lens, "input token lengths")
+                # Query index histogram and duplicate report
+                print_hist_int(query_indexes, "query indexes")
+                # Duplicate/repetition report
+                from collections import Counter
+                sorted_qidx = sorted(query_indexes)
+                counter = Counter(sorted_qidx)
+                duplicates = {k: v for k, v in counter.items() if v > 1}
+                if duplicates:
+                    print("Duplicate/repeated query indexes:")
+                    for idx, freq in duplicates.items():
+                        print(f"  Query index {idx} repeated {freq} times")
+                else:
+                    print("No duplicate/repeated query indexes in this batch.")
+            # Optionally print timing
+            import time
+            batch_start = time.time() if self.print_timing else None
             try:
-                #if self.enable_nvtx and nvtx:
-                #    nvtx.push_range("llmgenerate")
                 if self.enable_nvtx:
                     torch.cuda.nvtx.range_push("testing")
-                
-                # Use PyTorch record function to mark this batch
                 batch_label = f"batch_{self.batch_counter:04d}_size_{len(batch)}"
-                #with torch.profiler.record_function(batch_label):
                 # Only profile if enabled
                 if self.enable_profiler:
                     self.llm.start_profile()
-                outputs = self.llm.generate(prompts_to_process, self.sampling_params)
+                with torch.profiler.record_function(batch_label):
+                    gen_start = time.time() if self.print_timing else None
+                    outputs = self.llm.generate(prompts_to_process, self.sampling_params)
+                    gen_end = time.time() if self.print_timing else None
                 if self.enable_profiler:
                     self.llm.stop_profile()
-                
-                #if self.enable_nvtx and nvtx:
-                #    nvtx.pop_range()
                 if self.enable_nvtx:
                     torch.cuda.nvtx.range_pop()
-                
                 responses_to_loadgen = []
                 for i, output in enumerate(outputs):
                     token_ids = output.outputs[0].token_ids
@@ -169,22 +204,51 @@ class VLLMSingleSUT:
                     responses_to_loadgen.append(response)
                 if responses_to_loadgen:
                     lg.QuerySamplesComplete(responses_to_loadgen)
-                
                 self.batch_counter += 1
-                
+                if self.print_timing:
+                    batch_end = time.time()
+                    batch_times.append({
+                        'batch_idx': batch_idx,
+                        'start': batch_start,
+                        'end': batch_end,
+                        'duration': batch_end - batch_start,
+                        'llm_generate': (gen_end - gen_start) if gen_start is not None and gen_end is not None else None,
+                        'batch_size': len(batch)
+                    })
             except Exception as e:
                 logging.error(f"Error processing batch: {e}")
                 for query_id in original_query_ids:
                     response = lg.QuerySampleResponse(query_id, 0, 0, 0)
                     lg.QuerySamplesComplete([response])
-                
                 self.batch_counter += 1
-        
+                if self.print_timing:
+                    batch_end = time.time()
+                    batch_times.append({
+                        'batch_idx': batch_idx,
+                        'start': batch_start,
+                        'end': batch_end,
+                        'duration': batch_end - batch_start,
+                        'llm_generate': None,
+                        'batch_size': len(batch)
+                    })
         # Stop profiler after all batches are processed
         if self.enable_profiler and self.profiler is not None:
             self.profiler.stop()
             self.profiler = None
             logging.info(f"Stopped torch profiler after processing {self.batch_counter} batches")
+        # Print timing stats if enabled
+        if self.print_timing and batch_times:
+            import numpy as np
+            durations = np.array([bt['duration'] for bt in batch_times])
+            gen_durations = np.array([bt['llm_generate'] for bt in batch_times if bt['llm_generate'] is not None])
+            print("\nBatch timing statistics:")
+            print(f"  Batches: {len(batch_times)}")
+            print(f"  Duration (s): min={durations.min():.4f}, max={durations.max():.4f}, mean={durations.mean():.4f}, std={durations.std():.4f}")
+            if len(gen_durations) > 0:
+                print(f"  LLM generate (s): min={gen_durations.min():.4f}, max={gen_durations.max():.4f}, mean={gen_durations.mean():.4f}, std={gen_durations.std():.4f}")
+            print("  Per-batch details:")
+            for bt in batch_times:
+                print(f"    Batch {bt['batch_idx']:3d}: size={bt['batch_size']:4d}, duration={bt['duration']:.4f}s, llm_generate={bt['llm_generate'] if bt['llm_generate'] is not None else 'N/A'}")
 
     def flush_queries(self):
         logging.info("SUT flush_queries: Flushing (no specific action for offline in this demo).")
@@ -244,6 +308,9 @@ if __name__ == "__main__":
     parser.add_argument("--enable-profiler", action="store_true", help="Enable torch profiler to profile LLM generate calls with batch labeling")
     parser.add_argument("--profiler-dir", type=str, default="./torch_profiler_logs", help="Directory to save torch profiler traces")
     parser.add_argument("--enable-nvtx", action="store_true", help="Enable NVTX profiling for GPU timeline analysis")
+    parser.add_argument("--print-histogram", action="store_true", help="Print histogram of input lengths and query indexes for each batch")
+    parser.add_argument("--sort-by-length", action="store_true", help="Sort queries in each batch by input token length before passing to LLM")
+    parser.add_argument("--print-timing", action="store_true", help="Print timing statistics for each batch and overall timing stats")
     args = parser.parse_args()
 
     # Set profiler directory environment variable
@@ -269,6 +336,9 @@ if __name__ == "__main__":
     ENABLE_PROFILER = args.enable_profiler
     PROFILER_DIR = args.profiler_dir
     ENABLE_NVTX = args.enable_nvtx
+    PRINT_HISTOGRAM = args.print_histogram
+    SORT_BY_LENGTH = args.sort_by_length
+    PRINT_TIMING = args.print_timing
 
     if DATASET_PATH is None:
         logging.error("Error: --dataset_path is required.")
@@ -294,7 +364,10 @@ if __name__ == "__main__":
             swap_space=SWAP_SPACE,
             enable_profiler=ENABLE_PROFILER,
             profiler_dir=PROFILER_DIR,
-            enable_nvtx=ENABLE_NVTX
+            enable_nvtx=ENABLE_NVTX,
+            print_histogram=PRINT_HISTOGRAM,
+            sort_by_length=SORT_BY_LENGTH,
+            print_timing=PRINT_TIMING
         )
         settings = lg.TestSettings()
         settings.scenario = lg.TestScenario.Offline
