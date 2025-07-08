@@ -42,7 +42,7 @@ def unload_samples_from_ram(query_samples):
     return
 
 class VLLMSingleSUT:
-    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, print_timing: bool = False):
+    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False):
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.max_model_len = max_model_len
@@ -57,6 +57,8 @@ class VLLMSingleSUT:
         self.enable_nvtx = enable_nvtx
         self.print_histogram = print_histogram
         self.sort_by_length = sort_by_length
+        self.sort_by_token_contents = sort_by_token_contents
+        self.print_sorted_tokens = print_sorted_tokens
         self.print_timing = print_timing
         self.profiler = None
         self.batch_counter = 0
@@ -134,6 +136,14 @@ class VLLMSingleSUT:
             # Optionally sort by input length
             if self.sort_by_length:
                 batch = sorted(batch, key=lambda q: len(self.data_object.input_ids[q.index]))
+            # Optionally sort by token contents
+            if self.sort_by_token_contents:
+                batch = sorted(batch, key=lambda q: tuple(self.data_object.input_ids[q.index]))
+            # Optionally print sorted tokens
+            if self.print_sorted_tokens or logging.getLogger().isEnabledFor(logging.DEBUG):
+                print(f"Batch {batch_idx} sorted tokens:")
+                for i, q in enumerate(batch):
+                    print(f"  {i:3d}: idx={q.index}, tokens={self.data_object.input_ids[q.index]}")
             prompts_to_process = [TokensPrompt(prompt_token_ids=self.data_object.input_ids[q_sample.index]) for q_sample in batch]
             original_query_ids = [q_sample.id for q_sample in batch]
             # Optionally print histogram
@@ -310,6 +320,8 @@ if __name__ == "__main__":
     parser.add_argument("--enable-nvtx", action="store_true", help="Enable NVTX profiling for GPU timeline analysis")
     parser.add_argument("--print-histogram", action="store_true", help="Print histogram of input lengths and query indexes for each batch")
     parser.add_argument("--sort-by-length", action="store_true", help="Sort queries in each batch by input token length before passing to LLM")
+    parser.add_argument("--sort-by-token-contents", action="store_true", help="Sort queries in each batch by the contents of the input token list (lexicographically)")
+    parser.add_argument("--print-sorted-tokens", action="store_true", help="Print the input token lists for each batch after sorting")
     parser.add_argument("--print-timing", action="store_true", help="Print timing statistics for each batch and overall timing stats")
     args = parser.parse_args()
 
@@ -338,6 +350,8 @@ if __name__ == "__main__":
     ENABLE_NVTX = args.enable_nvtx
     PRINT_HISTOGRAM = args.print_histogram
     SORT_BY_LENGTH = args.sort_by_length
+    SORT_BY_TOKEN_CONTENTS = args.sort_by_token_contents
+    PRINT_SORTED_TOKENS = args.print_sorted_tokens
     PRINT_TIMING = args.print_timing
 
     if DATASET_PATH is None:
@@ -367,6 +381,8 @@ if __name__ == "__main__":
             enable_nvtx=ENABLE_NVTX,
             print_histogram=PRINT_HISTOGRAM,
             sort_by_length=SORT_BY_LENGTH,
+            sort_by_token_contents=SORT_BY_TOKEN_CONTENTS,
+            print_sorted_tokens=PRINT_SORTED_TOKENS,
             print_timing=PRINT_TIMING
         )
         settings = lg.TestSettings()
