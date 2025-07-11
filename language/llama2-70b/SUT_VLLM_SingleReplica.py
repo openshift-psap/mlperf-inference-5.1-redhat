@@ -61,11 +61,13 @@ class VLLMSingleSUT:
         self.print_timing = print_timing
         self.profiler = None
         self.batch_counter = 0
+        
         self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=24576, device="cpu")
         logging.info("Datatset = %d", len(self.data_object.input_ids))
         logging.info("Datatset Max = %d", max(self.data_object.input_lens))
         logging.info("Datatset Min = %d", min(self.data_object.input_lens))
         logging.info("Datatset Len = %d", len(self.data_object.input_lens))
+        
         self._load_model()
 
     def _load_model(self):
@@ -81,7 +83,7 @@ class VLLMSingleSUT:
             max_num_seqs=self.max_num_seqs,
             pipeline_parallel_size=self.pipeline_parallel_size,
             swap_space=self.swap_space,
-            disable_log_stats = False
+            disable_log_stats=False
         )
         logging.info("Model loaded successfully.")
         self.sampling_params = SamplingParams(
@@ -108,6 +110,7 @@ class VLLMSingleSUT:
         num_batches = (total_samples + batch_size - 1) // batch_size
         logging.info(f"SUT issue_query: Received {len(query_samples)} queries from Loadgen. Batch size: {batch_size}. Number of batches: {num_batches}.")
         batch_times = []
+        
         # Initialize profiler once for all batches if enabled
         if self.enable_profiler and self.profiler is None:
             os.makedirs(self.profiler_dir, exist_ok=True)
@@ -127,23 +130,29 @@ class VLLMSingleSUT:
             )
             self.profiler.start()
             logging.info(f"Started torch profiler for all {num_batches} batches. Trace will be saved to {trace_file}")
+        
         for batch_idx in range(num_batches):
             start = batch_idx * batch_size
             end = min((batch_idx + 1) * batch_size, total_samples)
             batch = query_samples[start:end]
+            
             # Optionally sort by input length
             if self.sort_by_length:
                 batch = sorted(batch, key=lambda q: len(self.data_object.input_ids[q.index]))
             # Optionally sort by token contents
             if self.sort_by_token_contents:
                 batch = sorted(batch, key=lambda q: tuple(self.data_object.input_ids[q.index]))
+            
             # Optionally print sorted tokens
             if self.print_sorted_tokens or logging.getLogger().isEnabledFor(logging.DEBUG):
                 print(f"Batch {batch_idx} sorted tokens:")
                 for i, q in enumerate(batch):
                     print(f"  {i:3d}: idx={q.index}, tokens={self.data_object.input_ids[q.index]}")
+            
             prompts_to_process = [TokensPrompt(prompt_token_ids=self.data_object.input_ids[q_sample.index]) for q_sample in batch]
             original_query_ids = [q_sample.id for q_sample in batch]
+            original_query_indexes = [q_sample.index for q_sample in batch]
+            
             # Optionally print histogram
             if self.print_histogram:
                 input_lens = [len(self.data_object.input_ids[q_sample.index]) for q_sample in batch]
@@ -178,6 +187,7 @@ class VLLMSingleSUT:
                         print(f"  Query index {idx} repeated {freq} times")
                 else:
                     print("No duplicate/repeated query indexes in this batch.")
+            
             # Optionally print timing
             import time
             batch_start = time.time() if self.print_timing else None
@@ -201,6 +211,12 @@ class VLLMSingleSUT:
                     token_ids = output.outputs[0].token_ids
                     token_count = len(token_ids)
                     query_id = original_query_ids[i]
+                    query_index = original_query_indexes[i]
+                    
+                    # Detailed debug logging for output tokens
+                    logging.debug(f"Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
+                    logging.debug(f"Token IDs: {token_ids}")
+                    
                     if self.test_mode == "accuracy":
                         token_array = np.array(token_ids, dtype=np.int32)
                         token_bytes = token_array.tobytes()
@@ -337,8 +353,9 @@ if __name__ == "__main__":
     parser.add_argument("--print-timing", action="store_true", help="Print timing statistics for each batch and overall timing stats")
     args = parser.parse_args()
 
-    # Set profiler directory environment variable
-    os.environ["VLLM_TORCH_PROFILER_DIR"] = args.profiler_dir
+    # Set profiler directory environment variable only if profiler is enabled
+    if args.enable_profiler:
+        os.environ["VLLM_TORCH_PROFILER_DIR"] = args.profiler_dir
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.ERROR),

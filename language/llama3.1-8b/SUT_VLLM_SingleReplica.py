@@ -149,6 +149,7 @@ class VLLMSingleSUT:
                     print(f"  {i:3d}: idx={q.index}, tokens={self.data_object.input_ids[q.index]}")
             prompts_to_process = [TokensPrompt(prompt_token_ids=self.data_object.input_ids[q_sample.index]) for q_sample in batch]
             original_query_ids = [q_sample.id for q_sample in batch]
+            original_query_indexes = [q_sample.index for q_sample in batch]
             # Optionally print histogram
             if self.print_histogram:
                 input_lens = [len(self.data_object.input_ids[q_sample.index]) for q_sample in batch]
@@ -206,6 +207,12 @@ class VLLMSingleSUT:
                     token_ids = output.outputs[0].token_ids
                     token_count = len(token_ids)
                     query_id = original_query_ids[i]
+                    query_index = original_query_indexes[i]
+                    
+                    # Detailed debug logging for output tokens
+                    logging.debug(f"Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
+                    logging.debug(f"Token IDs: {token_ids}")
+                    
                     if self.test_mode == "accuracy":
                         token_array = np.array(token_ids, dtype=np.int32)
                         token_bytes = token_array.tobytes()
@@ -341,8 +348,9 @@ if __name__ == "__main__":
     parser.add_argument("--print-timing", action="store_true", help="Print timing statistics for each batch and overall timing stats")
     args = parser.parse_args()
 
-    # Set profiler directory environment variable
-    os.environ["VLLM_TORCH_PROFILER_DIR"] = args.profiler_dir
+    # Set profiler directory environment variable only if profiler is enabled
+    if args.enable_profiler:
+        os.environ["VLLM_TORCH_PROFILER_DIR"] = args.profiler_dir
     os.environ["VLLM_NO_USAGE_STATS"] = "0"
 
     logging.basicConfig(
