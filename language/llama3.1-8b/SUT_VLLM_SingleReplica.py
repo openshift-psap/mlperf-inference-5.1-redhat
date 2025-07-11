@@ -11,6 +11,12 @@ import torch
 import pkg_resources
 from datetime import datetime
 from vllm.v1.metrics.reader import Counter, Gauge, Histogram, Vector
+import requests
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+import queue
+import csv
 
 
 
@@ -286,6 +292,335 @@ class VLLMSingleSUT:
     def flush_queries(self):
         logging.info("SUT flush_queries: Flushing (no specific action for offline in this demo).")
 
+class VLLMSingleSUTAPI:
+    """Completely separate class for handling vLLM API server communication"""
+    
+    def __init__(self, model_name: str, dataset_path: str, api_server_url: str, max_model_len: int = None, test_mode: str = "performance", enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, enable_metrics_csv: bool = False, metrics_csv_path: str = "metrics.csv"):
+        self.model_name = model_name
+        self.dataset_path = dataset_path
+        self.api_server_url = api_server_url.rstrip('/')
+        self.max_model_len = max_model_len
+        self.test_mode = test_mode
+        self.enable_profiler = enable_profiler
+        self.profiler_dir = profiler_dir
+        self.enable_nvtx = enable_nvtx
+        self.print_histogram = print_histogram
+        self.sort_by_length = sort_by_length
+        self.sort_by_token_contents = sort_by_token_contents
+        self.print_sorted_tokens = print_sorted_tokens
+        self.print_timing = print_timing
+        self.batch_counter = 0
+        self.server_ready = False
+        self.enable_metrics_csv = enable_metrics_csv
+        self.metrics_csv_path = metrics_csv_path
+        self.metrics_thread = None
+        self.metrics_stop_event = threading.Event()
+        
+        # API endpoints
+        self.completions_endpoint = f"{self.api_server_url}/v1/completions"
+        self.health_endpoint = f"{self.api_server_url}/health"
+        self.metrics_endpoint = f"{self.api_server_url}/metrics"
+        
+        # Load dataset
+        self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368, device="cpu")
+        logging.info("Dataset = %d", len(self.data_object.input_ids))
+        logging.info("Dataset Max = %d", max(self.data_object.input_lens))
+        logging.info("Dataset Min = %d", min(self.data_object.input_lens))
+        logging.info("Dataset Len = %d", len(self.data_object.input_lens))
+        
+        # Wait for server to be ready
+        self._wait_for_server_ready()
+        
+        # Initialize tokenizer for detokenization (if available)
+        self._initialize_tokenizer()
+
+        # Start metrics thread if enabled
+        if self.enable_metrics_csv:
+            self._start_metrics_thread()
+
+    def _wait_for_server_ready(self, timeout: int = 600):
+        """Wait for the vLLM API server to be ready with timeout"""
+        logging.info(f"Waiting for vLLM API server at {self.api_server_url} to be ready (timeout: {timeout}s)...")
+        
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(self.health_endpoint, timeout=10)
+                if response.status_code == 200:
+                    logging.info(f"vLLM API server at {self.api_server_url} is ready!")
+                    self.server_ready = True
+                    return
+                else:
+                    logging.warning(f"API server health check returned status {response.status_code}")
+            except Exception as e:
+                logging.debug(f"API server not ready yet: {e}")
+            
+            time.sleep(5)  # Wait 5 seconds before next check
+        
+        raise RuntimeError(f"vLLM API server at {self.api_server_url} did not become ready within {timeout} seconds")
+    
+    def _initialize_tokenizer(self):
+        """Initialize tokenizer for detokenization if available"""
+        try:
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            logging.info("Tokenizer initialized for detokenization")
+        except Exception as e:
+            logging.warning(f"Could not initialize tokenizer for detokenization: {e}")
+            self.tokenizer = None
+    
+    def _detokenize_response(self, text_response: str) -> List[int]:
+        """Detokenize text response back to token IDs"""
+        if self.tokenizer:
+            try:
+                # Tokenize the response text to get token IDs
+                tokens = self.tokenizer.encode(text_response, add_special_tokens=False)
+                return tokens
+            except Exception as e:
+                logging.warning(f"Error detokenizing response: {e}")
+                # Fallback: return a simple token representation
+                return [1, 2, 3]  # Placeholder tokens
+        else:
+            # No tokenizer available, return placeholder
+            logging.warning("No tokenizer available for detokenization, using placeholder tokens")
+            return [1, 2, 3]  # Placeholder tokens
+    
+    def issue_query(self, query_samples: List['lg.QuerySample']):
+        """Handle queries by sending them to the vLLM API server"""
+        if not self.server_ready:
+            logging.error("API server is not ready")
+            # Send error responses
+            for q_sample in query_samples:
+                response = lg.QuerySampleResponse(q_sample.id, 0, 0, 0)
+                lg.QuerySamplesComplete([response])
+            return
+        
+        batch_size = BATCH_SIZE
+        total_samples = len(query_samples)
+        num_batches = (total_samples + batch_size - 1) // batch_size
+        logging.info(f"API SUT issue_query: Received {len(query_samples)} queries from Loadgen. Batch size: {batch_size}. Number of batches: {num_batches}.")
+        batch_times = []
+        
+        for batch_idx in range(num_batches):
+            start = batch_idx * batch_size
+            end = min((batch_idx + 1) * batch_size, total_samples)
+            batch = query_samples[start:end]
+            
+            # Optionally sort by input length
+            if self.sort_by_length:
+                batch = sorted(batch, key=lambda q: len(self.data_object.input_ids[q.index]))
+            # Optionally sort by token contents
+            if self.sort_by_token_contents:
+                batch = sorted(batch, key=lambda q: tuple(self.data_object.input_ids[q.index]))
+            
+            # Optionally print sorted tokens
+            if self.print_sorted_tokens or logging.getLogger().isEnabledFor(logging.DEBUG):
+                print(f"Batch {batch_idx} sorted tokens:")
+                for i, q in enumerate(batch):
+                    print(f"  {i:3d}: idx={q.index}, tokens={self.data_object.input_ids[q.index]}")
+            
+            original_query_ids = [q_sample.id for q_sample in batch]
+            original_query_indexes = [q_sample.index for q_sample in batch]
+            
+            # Optionally print histogram
+            if self.print_histogram:
+                input_lens = [len(self.data_object.input_ids[q_sample.index]) for q_sample in batch]
+                query_indexes = [q_sample.index for q_sample in batch]
+                def print_hist_int(data, title, width=50, bins=10):
+                    import numpy as np
+                    data = np.array(data, dtype=int)
+                    min_val, max_val = int(np.min(data)), int(np.max(data))
+                    if min_val == max_val:
+                        bins = 1
+                    else:
+                        bins = min(bins, max_val - min_val + 1)
+                    hist, bin_edges = np.histogram(data, bins=bins, range=(min_val, max_val+1))
+                    max_count = max(hist)
+                    print(f"Histogram of {title} (integer bins):")
+                    for i in range(len(hist)):
+                        left = int(bin_edges[i])
+                        right = int(bin_edges[i+1]) - 1
+                        bar = '#' * int(width * hist[i] / max_count) if max_count > 0 else ''
+                        print(f"  {left:6d} - {right:6d}: {bar} ({hist[i]})")
+                print_hist_int(input_lens, "input token lengths")
+                # Query index histogram and duplicate report
+                print_hist_int(query_indexes, "query indexes")
+                # Duplicate/repetition report
+                from collections import Counter
+                sorted_qidx = sorted(query_indexes)
+                counter = Counter(sorted_qidx)
+                duplicates = {k: v for k, v in counter.items() if v > 1}
+                if duplicates:
+                    print("Duplicate/repeated query indexes:")
+                    for idx, freq in duplicates.items():
+                        print(f"  Query index {idx} repeated {freq} times")
+                else:
+                    print("No duplicate/repeated query indexes in this batch.")
+            
+            # Optionally print timing
+            batch_start = time.time() if self.print_timing else None
+            try:
+                batch_label = f"api_batch_{self.batch_counter:04d}_size_{len(batch)}"
+                if self.enable_nvtx:
+                    torch.cuda.nvtx.range_push(batch_label)
+                
+                with torch.profiler.record_function(batch_label):
+                    gen_start = time.time() if self.print_timing else None
+                    
+                    # Convert token IDs to text prompts for API server
+                    text_prompts = []
+                    for q_sample in batch:
+                        # Convert token IDs to text using tokenizer if available
+                        if self.tokenizer:
+                            try:
+                                text_prompt = self.tokenizer.decode(self.data_object.input_ids[q_sample.index], skip_special_tokens=True)
+                                text_prompts.append(text_prompt)
+                            except Exception as e:
+                                logging.warning(f"Error decoding tokens for query {q_sample.id}: {e}")
+                                # Fallback: use token IDs as string
+                                text_prompts.append(" ".join([str(t) for t in self.data_object.input_ids[q_sample.index]]))
+                        else:
+                            # No tokenizer, use token IDs as string
+                            text_prompts.append(" ".join([str(t) for t in self.data_object.input_ids[q_sample.index]]))
+                    
+                    # Prepare API request
+                    api_payload = {
+                        "model": "default",  # Use default model
+                        "prompt": text_prompts,
+                        "max_tokens": 128,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "top_k": 1,
+                        "stream": False
+                    }
+                    
+                    # Send request to API server
+                    response = requests.post(self.completions_endpoint, json=api_payload, timeout=30)
+                    if response.status_code != 200:
+                        raise RuntimeError(f"API server returned status {response.status_code}: {response.text}")
+                    
+                    api_result = response.json()
+                    choices = api_result.get("choices", [])
+                    
+                    gen_end = time.time() if self.print_timing else None
+                
+                if self.enable_nvtx:
+                    torch.cuda.nvtx.range_pop()
+                
+                # Process API responses
+                responses_to_loadgen = []
+                for i, choice in enumerate(choices):
+                    query_id = original_query_ids[i]
+                    query_index = original_query_indexes[i]
+                    
+                    # Extract text response from API
+                    text_response = choice.get("text", "")
+                    
+                    # Detokenize response
+                    token_ids = self._detokenize_response(text_response)
+                    token_count = len(token_ids)
+                    
+                    # Detailed debug logging for output tokens
+                    logging.debug(f"API Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
+                    logging.debug(f"API Token IDs: {token_ids}")
+                    logging.debug(f"API Text Response: {text_response}")
+                    
+                    if self.test_mode == "accuracy":
+                        token_array = np.array(token_ids, dtype=np.int32)
+                        token_bytes = token_array.tobytes()
+                        response_data = token_array.ctypes.data
+                        response_size = len(token_bytes)
+                        response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+                    else:
+                        response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
+                    responses_to_loadgen.append(response)
+                
+                if responses_to_loadgen:
+                    lg.QuerySamplesComplete(responses_to_loadgen)
+                
+                self.batch_counter += 1
+                if self.print_timing:
+                    batch_end = time.time()
+                    batch_times.append({
+                        'batch_idx': batch_idx,
+                        'start': batch_start,
+                        'end': batch_end,
+                        'duration': batch_end - batch_start,
+                        'api_generate': (gen_end - gen_start) if gen_start is not None and gen_end is not None else None,
+                        'batch_size': len(batch)
+                    })
+                
+            except Exception as e:
+                logging.error(f"Error processing API batch: {e}")
+                for query_id in original_query_ids:
+                    response = lg.QuerySampleResponse(query_id, 0, 0, 0)
+                    lg.QuerySamplesComplete([response])
+                self.batch_counter += 1
+                if self.print_timing:
+                    batch_end = time.time()
+                    batch_times.append({
+                        'batch_idx': batch_idx,
+                        'start': batch_start,
+                        'end': batch_end,
+                        'duration': batch_end - batch_start,
+                        'api_generate': None,
+                        'batch_size': len(batch)
+                    })
+        
+        # Print timing stats if enabled
+        if self.print_timing and batch_times:
+            import numpy as np
+            durations = np.array([bt['duration'] for bt in batch_times])
+            gen_durations = np.array([bt['api_generate'] for bt in batch_times if bt['api_generate'] is not None])
+            print("\nAPI Batch timing statistics:")
+            print(f"  Batches: {len(batch_times)}")
+            print(f"  Duration (s): min={durations.min():.4f}, max={durations.max():.4f}, mean={durations.mean():.4f}, std={durations.std():.4f}")
+            if len(gen_durations) > 0:
+                print(f"  API generate (s): min={gen_durations.min():.4f}, max={gen_durations.max():.4f}, mean={gen_durations.mean():.4f}, std={gen_durations.std():.4f}")
+            print("  Per-batch details:")
+            for bt in batch_times:
+                print(f"    Batch {bt['batch_idx']:3d}: size={bt['batch_size']:4d}, duration={bt['duration']:.4f}s, api_generate={bt['api_generate'] if bt['api_generate'] is not None else 'N/A'}")
+
+    def flush_queries(self):
+        logging.info("API SUT flush_queries: Flushing (no specific action for offline in this demo).")
+
+    def _start_metrics_thread(self):
+        def metrics_worker():
+            logging.info(f"Starting metrics collection thread, writing to {self.metrics_csv_path}")
+            with open(self.metrics_csv_path, mode='w', newline='') as csvfile:
+                writer = None
+                while not self.metrics_stop_event.is_set():
+                    try:
+                        response = requests.get(self.metrics_endpoint, timeout=10)
+                        if response.status_code == 200:
+                            metrics_data = response.text
+                            timestamp = datetime.now().isoformat()
+                            # For Prometheus format, parse lines as key value pairs
+                            lines = [l for l in metrics_data.splitlines() if l and not l.startswith('#')]
+                            metrics_dict = {l.split()[0]: l.split()[1] for l in lines if len(l.split()) == 2}
+                            metrics_dict['timestamp'] = timestamp
+                            if writer is None:
+                                # Write header
+                                fieldnames = list(metrics_dict.keys())
+                                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                                writer.writeheader()
+                            writer.writerow(metrics_dict)
+                            csvfile.flush()
+                        else:
+                            logging.warning(f"Metrics endpoint returned status {response.status_code}")
+                    except Exception as e:
+                        logging.warning(f"Error collecting metrics: {e}")
+                    self.metrics_stop_event.wait(1)  # 1 second interval
+            logging.info("Metrics collection thread stopped.")
+        self.metrics_thread = threading.Thread(target=metrics_worker, daemon=True)
+        self.metrics_thread.start()
+
+    def stop_metrics_thread(self):
+        if self.enable_metrics_csv and self.metrics_thread is not None:
+            self.metrics_stop_event.set()
+            self.metrics_thread.join()
+            logging.info("Metrics thread joined.")
+
 if __name__ == "__main__":
     # Print command line and executable information
     import sys
@@ -346,6 +681,9 @@ if __name__ == "__main__":
     parser.add_argument("--sort-by-token-contents", action="store_true", help="Sort queries in each batch by the contents of the input token list (lexicographically)")
     parser.add_argument("--print-sorted-tokens", action="store_true", help="Print the input token lists for each batch after sorting")
     parser.add_argument("--print-timing", action="store_true", help="Print timing statistics for each batch and overall timing stats")
+    parser.add_argument("--api-server-url", type=str, default=None, help="URL of vLLM API server to use instead of local model")
+    parser.add_argument("--enable-metrics-csv", action="store_true", help="Enable periodic metrics collection from /metrics endpoint (SUTAPI only)")
+    parser.add_argument("--metrics-csv-path", type=str, default="metrics.csv", help="Path to CSV file for metrics logging (SUTAPI only)")
     args = parser.parse_args()
 
     # Set profiler directory environment variable only if profiler is enabled
@@ -391,25 +729,49 @@ if __name__ == "__main__":
 
     sut = None
     try:
-        sut = VLLMSingleSUT(
-            model_name=MODEL_NAME,
-            dataset_path=DATASET_PATH,
-            max_model_len=MAX_MODEL_LEN,
-            gpu_memory_utilization=GPU_MEM_UTIL,
-            max_num_seqs=MAX_NUM_SEQS,
-            test_mode=TEST_MODE,
-            num_gpus=NUM_GPUS,
-            pipeline_parallel_size=PIPELINE_PARALLEL_SIZE,
-            swap_space=SWAP_SPACE,
-            enable_profiler=ENABLE_PROFILER,
-            profiler_dir=PROFILER_DIR,
-            enable_nvtx=ENABLE_NVTX,
-            print_histogram=PRINT_HISTOGRAM,
-            sort_by_length=SORT_BY_LENGTH,
-            sort_by_token_contents=SORT_BY_TOKEN_CONTENTS,
-            print_sorted_tokens=PRINT_SORTED_TOKENS,
-            print_timing=PRINT_TIMING
-        )
+        # Choose between local model and API server based on command line argument
+        if args.api_server_url:
+            # Use API server
+            logging.info(f"Using vLLM API server at: {args.api_server_url}")
+            sut = VLLMSingleSUTAPI(
+                model_name=MODEL_NAME,
+                dataset_path=DATASET_PATH,
+                api_server_url=args.api_server_url,
+                max_model_len=MAX_MODEL_LEN,
+                test_mode=TEST_MODE,
+                enable_profiler=ENABLE_PROFILER,
+                profiler_dir=PROFILER_DIR,
+                enable_nvtx=ENABLE_NVTX,
+                print_histogram=PRINT_HISTOGRAM,
+                sort_by_length=SORT_BY_LENGTH,
+                sort_by_token_contents=SORT_BY_TOKEN_CONTENTS,
+                print_sorted_tokens=PRINT_SORTED_TOKENS,
+                print_timing=PRINT_TIMING,
+                enable_metrics_csv=args.enable_metrics_csv,
+                metrics_csv_path=args.metrics_csv_path
+            )
+        else:
+            # Use local model
+            logging.info("Using local vLLM model")
+            sut = VLLMSingleSUT(
+                model_name=MODEL_NAME,
+                dataset_path=DATASET_PATH,
+                max_model_len=MAX_MODEL_LEN,
+                gpu_memory_utilization=GPU_MEM_UTIL,
+                max_num_seqs=MAX_NUM_SEQS,
+                test_mode=TEST_MODE,
+                num_gpus=NUM_GPUS,
+                pipeline_parallel_size=PIPELINE_PARALLEL_SIZE,
+                swap_space=SWAP_SPACE,
+                enable_profiler=ENABLE_PROFILER,
+                profiler_dir=PROFILER_DIR,
+                enable_nvtx=ENABLE_NVTX,
+                print_histogram=PRINT_HISTOGRAM,
+                sort_by_length=SORT_BY_LENGTH,
+                sort_by_token_contents=SORT_BY_TOKEN_CONTENTS,
+                print_sorted_tokens=PRINT_SORTED_TOKENS,
+                print_timing=PRINT_TIMING
+            )
         settings = lg.TestSettings()
         settings.scenario = lg.TestScenario.Offline
         if TEST_MODE == "accuracy":
@@ -417,7 +779,7 @@ if __name__ == "__main__":
         else:
             settings.mode = lg.TestMode.PerformanceOnly
         settings.use_token_latencies = True
-        settings.FromConfig(args.user_conf, args.lg_model_name, "Offline")
+        settings.FromConfig(args.user_conf, args.lg_model_name, "Offline",1)
         log_output_settings = lg.LogOutputSettings()
         log_output_settings.outdir = args.output_log_dir
         log_output_settings.copy_summary_to_stdout = True
@@ -441,5 +803,8 @@ if __name__ == "__main__":
         logging.info("\nMLPerf Loadgen test finished.")
         logging.info("Main: Program finished.")
         logging.info("Run Completed!")
+        # Stop metrics thread if SUTAPI and enabled
+        if args.api_server_url and args.enable_metrics_csv and hasattr(sut, 'stop_metrics_thread'):
+            sut.stop_metrics_thread()
     except Exception as e:
         logging.critical(f"\nMain program encountered an error: {e}") 
