@@ -508,6 +508,7 @@ class VLLMSingleSUTAPI:
                     torch.cuda.nvtx.range_pop()
                 
                 # Process API responses
+                detok_start = time.time() if self.print_timing else None
                 responses_to_loadgen = []
                 for i, choice in enumerate(choices):
                     query_id = original_query_ids[i]
@@ -517,6 +518,8 @@ class VLLMSingleSUTAPI:
                     text_response = choice.get("text", "")
                     
                     # Detokenize response
+                    if self.print_timing:
+                        print(f"[Timing] Detokenizing response for query_id={query_id}")
                     token_ids = self._detokenize_response(text_response)
                     token_count = len(token_ids)
                     
@@ -534,6 +537,9 @@ class VLLMSingleSUTAPI:
                     else:
                         response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
                     responses_to_loadgen.append(response)
+                if self.print_timing and detok_start is not None:
+                    detok_end = time.time()
+                    print(f"[Timing] Total detokenization time for batch {batch_idx}: {detok_end - detok_start:.6f} seconds")
                 
                 if responses_to_loadgen:
                     lg.QuerySamplesComplete(responses_to_loadgen)
