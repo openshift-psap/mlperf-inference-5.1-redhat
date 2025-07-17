@@ -322,7 +322,7 @@ class VLLMSingleSUTAPI:
         self.metrics_endpoint = f"{self.api_server_url}/metrics"
         
         # Load dataset
-        self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368, device="cpu")
+        self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368 )
         logging.info("Dataset = %d", len(self.data_object.input_ids))
         logging.info("Dataset Max = %d", max(self.data_object.input_lens))
         logging.info("Dataset Min = %d", min(self.data_object.input_lens))
@@ -485,7 +485,7 @@ class VLLMSingleSUTAPI:
                     
                     # Prepare API request
                     api_payload = {
-                        "model": "default",  # Use default model
+                        "model": self.model_name,  # Use default model
                         "prompt": text_prompts,
                         "max_tokens": 128,
                         "temperature": 0.0,
@@ -495,7 +495,7 @@ class VLLMSingleSUTAPI:
                     }
                     
                     # Send request to API server
-                    response = requests.post(self.completions_endpoint, json=api_payload, timeout=30)
+                    response = requests.post(self.completions_endpoint, json=api_payload)
                     if response.status_code != 200:
                         raise RuntimeError(f"API server returned status {response.status_code}: {response.text}")
                     
@@ -524,7 +524,7 @@ class VLLMSingleSUTAPI:
                     token_count = len(token_ids)
                     
                     # Detailed debug logging for output tokens
-                    logging.debug(f"API Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
+                    logging.info(f"API Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
                     logging.debug(f"API Token IDs: {token_ids}")
                     logging.debug(f"API Text Response: {text_response}")
                     
