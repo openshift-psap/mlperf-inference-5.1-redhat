@@ -17,6 +17,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import queue
 import csv
+import array
+from vllm import AsyncLLMEngine, AsyncEngineArgs
+import asyncio
 
 
 
@@ -50,7 +53,7 @@ def unload_samples_from_ram(query_samples):
     return
 
 class VLLMSingleSUT:
-    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False):
+    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, max_num_batched_tokens: int = None):
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.max_model_len = max_model_len
@@ -70,10 +73,12 @@ class VLLMSingleSUT:
         self.print_timing = print_timing
         self.profiler = None
         self.batch_counter = 0
+        self.max_num_batched_tokens = max_num_batched_tokens
         self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368)
         logging.info("Dataset Max          = %d", max(self.data_object.input_lens))
         logging.info("Dataset Min          = %d", min(self.data_object.input_lens))
         logging.info("Dataset TotalSamples = %d", len(self.data_object.input_lens))
+        self.max_num_batched_tokens = max_num_batched_tokens
         self._load_model()
 
     def _load_model(self):
@@ -89,7 +94,8 @@ class VLLMSingleSUT:
             max_num_seqs=self.max_num_seqs,
             pipeline_parallel_size=self.pipeline_parallel_size,
             swap_space=self.swap_space,
-            disable_log_stats=False
+            disable_log_stats=False,
+            max_num_batched_tokens=self.max_num_batched_tokens
         )
         logging.info("Model loaded successfully.")
         self.sampling_params = SamplingParams(
@@ -216,7 +222,7 @@ class VLLMSingleSUT:
                     query_index = original_query_indexes[i]
                     
                     # Detailed debug logging for output tokens
-                    logging.debug(f"Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
+                    logging.info(f"Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
                     logging.debug(f"Token IDs: {token_ids}")
                     
                     if self.test_mode == "accuracy":
@@ -632,6 +638,128 @@ class VLLMSingleSUTAPI:
             self.metrics_thread.join()
             logging.info("Metrics thread joined.")
 
+# Add VLLMSingleSUTServer class below, modeled after SUTServer in llama3.1-405b/SUT_VLLM.py
+class VLLMSingleSUTServer:
+    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, max_num_batched_tokens: int = None, num_workers: int = 1, batch_size: int = 1):
+        self.model_name = model_name
+        self.dataset_path = dataset_path
+        self.max_model_len = max_model_len
+        self.gpu_memory_utilization = gpu_memory_utilization
+        self.max_num_seqs = max_num_seqs
+        self.test_mode = test_mode
+        self.num_gpus = num_gpus
+        self.pipeline_parallel_size = pipeline_parallel_size
+        self.swap_space = swap_space
+        self.enable_profiler = enable_profiler
+        self.profiler_dir = profiler_dir
+        self.enable_nvtx = enable_nvtx
+        self.print_histogram = print_histogram
+        self.sort_by_length = sort_by_length
+        self.sort_by_token_contents = sort_by_token_contents
+        self.print_sorted_tokens = print_sorted_tokens
+        self.print_timing = print_timing
+        self.max_num_batched_tokens = max_num_batched_tokens
+        self.profiler = None
+        self.batch_counter = 0
+        self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368)
+        self.query_queue = queue.Queue()
+        self.num_workers = num_workers
+        self.batch_size = batch_size
+        self.worker_threads = [None] * self.num_workers
+        self.request_id = 0
+        self._load_model()
+        self._start_workers()
+
+    def _load_model(self):
+        logging.info(f"Loading AsyncLLMEngine for model '{self.model_name}' on single GPU...")
+        self.engine_args = AsyncEngineArgs(
+            self.model_name,
+            tensor_parallel_size=self.num_gpus,
+            max_model_len=self.max_model_len,
+            max_num_seqs=self.max_num_seqs,
+            pipeline_parallel_size=self.pipeline_parallel_size,
+            swap_space=self.swap_space,
+            max_num_batched_tokens=self.max_num_batched_tokens
+        )
+        self.model = AsyncLLMEngine.from_engine_args(self.engine_args)
+        self.sampling_params = SamplingParams(
+            temperature=0.0,
+            max_tokens=128,
+            min_tokens=1,
+            top_p=1,
+            top_k=1
+        )
+        logging.info("AsyncLLMEngine loaded successfully.")
+
+    def _start_workers(self):
+        for j in range(self.num_workers):
+            worker = threading.Thread(target=self.process_queries)
+            worker.start()
+            self.worker_threads[j] = worker
+
+    async def stream_output(self, batch, results_generator, original_query_ids, original_query_indexes):
+        # This assumes results_generator yields a list of outputs, one per prompt
+        first = True
+        async for request_output in results_generator:
+            outputs = request_output.outputs
+            for i, output in enumerate(outputs):
+                token_ids = output.token_ids
+                if first:
+                    response_data = array.array("B", np.array(token_ids, np.int32).tobytes())
+                    bi = response_data.buffer_info()
+                    response = [lg.QuerySampleResponse(original_query_ids[i], bi[0], bi[1])]
+                    lg.FirstTokenComplete(response)
+            first = False
+        # After streaming, send QuerySamplesComplete for all
+        for i, output in enumerate(outputs):
+            token_ids = output.token_ids
+            n_tokens = len(token_ids)
+            response_array = array.array("B", np.array(token_ids, np.int32).tobytes())
+            bi = response_array.buffer_info()
+            response = [lg.QuerySampleResponse(original_query_ids[i], bi[0], bi[1], n_tokens)]
+            lg.QuerySamplesComplete(response)
+
+    def process_queries(self):
+        while True:
+            batch = []
+            try:
+                # Block until at least one query is available
+                qitem = self.query_queue.get()
+                if qitem is None:
+                    break
+                batch.append(qitem)
+                # Try to get up to batch_size-1 more queries without blocking
+                for _ in range(self.batch_size - 1):
+                    try:
+                        qitem = self.query_queue.get_nowait()
+                        if qitem is None:
+                            break
+                        batch.append(qitem)
+                    except queue.Empty:
+                        break
+                if not batch:
+                    continue
+                # Prepare batch input
+                prompts_to_process = [TokensPrompt(prompt_token_ids=self.data_object.input_ids[q.index]) for q in batch]
+                original_query_ids = [q.id for q in batch]
+                original_query_indexes = [q.index for q in batch]
+                # Generate outputs as a batch
+                results_generator = self.model.generate(
+                    prompt=prompts_to_process, sampling_params=self.sampling_params, request_id=str(self.request_id)
+                )
+                self.request_id += 1
+                # For each output, stream tokens and complete
+                asyncio.run(self.stream_output(batch, results_generator, original_query_ids, original_query_indexes))
+            except Exception as e:
+                logging.error(f"Error in process_queries: {e}")
+
+    def issue_query(self, query_samples):
+        for q in query_samples:
+            self.query_queue.put(q)
+
+    def flush_queries(self):
+        logging.info("Server SUT flush_queries: Flushing (no specific action in this demo).")
+
 if __name__ == "__main__":
     # Print command line and executable information
     import sys
@@ -696,6 +824,8 @@ if __name__ == "__main__":
     parser.add_argument("--api-server-url", type=str, default=None, help="URL of vLLM API server to use instead of local model")
     parser.add_argument("--enable-metrics-csv", action="store_true", help="Enable periodic metrics collection from /metrics endpoint (SUTAPI only)")
     parser.add_argument("--metrics-csv-path", type=str, default="metrics.csv", help="Path to CSV file for metrics logging (SUTAPI only)")
+    parser.add_argument("--max-num-batched-tokens", type=int, default=None, help="Maximum number of batched tokens for vLLM batching")
+    parser.add_argument("--num-workers", type=int, default=1, help="Number of worker threads for server scenario batching")
     args = parser.parse_args()
 
     # Set profiler directory environment variable only if profiler is enabled
@@ -729,6 +859,8 @@ if __name__ == "__main__":
     SORT_BY_TOKEN_CONTENTS = args.sort_by_token_contents
     PRINT_SORTED_TOKENS = args.print_sorted_tokens
     PRINT_TIMING = args.print_timing
+    MAX_NUM_BATCHED_TOKENS = args.max_num_batched_tokens
+    NUM_WORKERS = args.num_workers
 
     if DATASET_PATH is None:
         logging.error("Error: --dataset-path is required.")
@@ -783,7 +915,8 @@ if __name__ == "__main__":
                 sort_by_length=SORT_BY_LENGTH,
                 sort_by_token_contents=SORT_BY_TOKEN_CONTENTS,
                 print_sorted_tokens=PRINT_SORTED_TOKENS,
-                print_timing=PRINT_TIMING
+                print_timing=PRINT_TIMING,
+                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS
             )
         settings = lg.TestSettings()
         if SCENARIO == "Server":
