@@ -262,6 +262,8 @@ class VLLMSingleSUT:
             self.profiler.stop()
             self.profiler = None
             logging.info(f"Stopped torch profiler after processing {self.batch_counter} batches")
+
+
         # Print timing stats if enabled
         if self.print_timing and batch_times:
             import numpy as np
@@ -269,12 +271,14 @@ class VLLMSingleSUT:
             gen_durations = np.array([bt['llm_generate'] for bt in batch_times if bt['llm_generate'] is not None])
             print("\nBatch timing statistics:")
             print(f"  Batches: {len(batch_times)}")
-            print(f"  Duration (s): min={durations.min():.4f}, max={durations.max():.4f}, mean={durations.mean():.4f}, std={durations.std():.4f}")
+            print(f"  Duration (s): min={durations.min():.2f}, max={durations.max():.2f}, mean={durations.mean():.2f}, std={durations.std():.2f}")
             if len(gen_durations) > 0:
-                print(f"  LLM generate (s): min={gen_durations.min():.4f}, max={gen_durations.max():.4f}, mean={gen_durations.mean():.4f}, std={gen_durations.std():.4f}")
+                print(f"  LLM generate (s): min={gen_durations.min():.2f}, max={gen_durations.max():.2f}, mean={gen_durations.mean():.2f}, std={gen_durations.std():.2f}")
             print("  Per-batch details:")
             for bt in batch_times:
-                print(f"    Batch {bt['batch_idx']:3d}: size={bt['batch_size']:4d}, duration={bt['duration']:.4f}s, llm_generate={bt['llm_generate'] if bt['llm_generate'] is not None else 'N/A'}")
+                print(f"    Batch {bt['batch_idx']:3d}: size={bt['batch_size']:4d}, duration={bt['duration']:.2f}s, llm_generate={bt['llm_generate'] if bt['llm_generate'] is not None else 'N/A'}")
+
+            """
             for metric in self.llm.get_metrics():
                         if isinstance(metric, Gauge):
                             print(f"{metric.name} (gauge) = {metric.value}")
@@ -288,6 +292,7 @@ class VLLMSingleSUT:
                             print(f"    count = {metric.count}")
                             for bucket_le, value in metric.buckets.items():
                                 print(f"    {bucket_le} = {value}")
+            """
 
     def flush_queries(self):
         logging.info("SUT flush_queries: Flushing (no specific action for offline in this demo).")
@@ -295,7 +300,7 @@ class VLLMSingleSUT:
 class VLLMSingleSUTAPI:
     """Completely separate class for handling vLLM API server communication"""
     
-    def __init__(self, model_name: str, dataset_path: str, api_server_url: str, max_model_len: int = None, test_mode: str = "performance", enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, enable_metrics_csv: bool = False, metrics_csv_path: str = "metrics.csv"):
+    def __init__(self, model_name: str, dataset_path: str, api_server_url: str, max_model_len: int = 2048, test_mode: str = "performance", enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, enable_metrics_csv: bool = False, metrics_csv_path: str = "metrics.csv"):
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.api_server_url = api_server_url.rstrip('/')
@@ -664,21 +669,22 @@ if __name__ == "__main__":
         description="Run vLLM generation with MLPerf Loadgen in offline scenario (single replica).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--model_name", type=str, default="HuggingFaceH4/tiny-random-LlamaForCausalLM", help="The name of the LLM model to load.")
-    parser.add_argument("--dataset_path", type=str, default=None, help="Path to the processed dataset pickle file containing tokenized inputs")
-    parser.add_argument("--num_samples", type=int, default=13368, help="Number of samples (prompts) Loadgen will issue for the offline test.")
-    parser.add_argument("--max_model_len", type=int, default=None, help="Maximum sequence length for the model.")
-    parser.add_argument("--max_num_seqs", type=int, default=512, help="Maximum number of sequences that can be processed simultaneously by vLLM")
-    parser.add_argument("--gpu_mem_util", type=float, default=0.9, help="GPU memory utilization factor (0.0 to 1.0) for vLLM model loading")
-    parser.add_argument("--log_level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level.")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for the single worker process.")
+    parser.add_argument("--model-name", type=str, default="HuggingFaceH4/tiny-random-LlamaForCausalLM", help="The name of the LLM model to load.")
+    parser.add_argument("--dataset-path", type=str, default=None, help="Path to the processed dataset pickle file containing tokenized inputs")
+    parser.add_argument("--num-samples", type=int, default=13368, help="Number of samples (prompts) Loadgen will issue for the offline test.")
+    parser.add_argument("--max-model-len", type=int, default=2048, help="Maximum sequence length for the model.")
+    parser.add_argument("--max-num-seqs", type=int, default=512, help="Maximum number of sequences that can be processed simultaneously by vLLM")
+    parser.add_argument("--gpu-mem-util", type=float, default=0.9, help="GPU memory utilization factor (0.0 to 1.0) for vLLM model loading")
+    parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for the single worker process.")
     parser.add_argument("--user-conf", type=str, default="user.conf", help="user config for user LoadGen settings such as target QPS")
-    parser.add_argument("--lg_model_name", type=str, default="llama3_1-8b", choices=["llama3_1-8b", "llama3_1-8b-interactive","test-model"], help="Model name(specified in llm server)")
+    parser.add_argument("--lg-model-name", type=str, default="llama3_1-8b", choices=["llama3_1-8b", "llama3_1-8b-interactive","test-model"], help="Model name(specified in llm server)")
     parser.add_argument("--output-log-dir", type=str, default="./", help="Where logs are saved")
     parser.add_argument("--test-mode", type=str, default="performance", choices=["performance", "accuracy"], help="Test mode: 'performance' for performance testing, 'accuracy' for accuracy testing with raw bytes logging")
-    parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs to use (tensor_parallel_size)")
-    parser.add_argument("--pipeline_parallel_size", type=int, default=1, help="Pipeline parallel size (default 1)")
-    parser.add_argument("--swap_space", type=int, default=4, help="Swap space parameter for vLLM")
+    parser.add_argument("--scenario", type=str, default="Offline", choices=["Offline", "Server"], help="MLPerf scenario: 'Offline' for offline testing, 'Server' for server testing")
+    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use (tensor_parallel_size)")
+    parser.add_argument("--pipeline-parallel-size", type=int, default=1, help="Pipeline parallel size (default 1)")
+    parser.add_argument("--swap-space", type=int, default=4, help="Swap space parameter for vLLM")
     parser.add_argument("--enable-profiler", action="store_true", help="Enable torch profiler to profile LLM generate calls with batch labeling")
     parser.add_argument("--profiler-dir", type=str, default="./torch_profiler_logs", help="Directory to save torch profiler traces")
     parser.add_argument("--enable-nvtx", action="store_true", help="Enable NVTX profiling for GPU timeline analysis")
@@ -711,6 +717,7 @@ if __name__ == "__main__":
     GPU_MEM_UTIL = args.gpu_mem_util
     BATCH_SIZE = args.batch_size
     TEST_MODE = args.test_mode
+    SCENARIO = args.scenario
     NUM_GPUS = args.num_gpus
     PIPELINE_PARALLEL_SIZE = args.pipeline_parallel_size
     SWAP_SPACE = args.swap_space
@@ -724,11 +731,11 @@ if __name__ == "__main__":
     PRINT_TIMING = args.print_timing
 
     if DATASET_PATH is None:
-        logging.error("Error: --dataset_path is required.")
+        logging.error("Error: --dataset-path is required.")
         exit(1)
 
     if NUM_SAMPLES <= 0:
-        logging.error("Error: Number of samples (--num_samples) must be at least 1.")
+        logging.error("Error: Number of samples (--num-samples) must be at least 1.")
         exit(1)
 
     logging.info("-" * 50)
@@ -779,13 +786,16 @@ if __name__ == "__main__":
                 print_timing=PRINT_TIMING
             )
         settings = lg.TestSettings()
-        settings.scenario = lg.TestScenario.Offline
+        if SCENARIO == "Server":
+            settings.scenario = lg.TestScenario.Server
+        else:
+            settings.scenario = lg.TestScenario.Offline
         if TEST_MODE == "accuracy":
             settings.mode = lg.TestMode.AccuracyOnly
         else:
             settings.mode = lg.TestMode.PerformanceOnly
         settings.use_token_latencies = True
-        settings.FromConfig(args.user_conf, args.lg_model_name, "Offline",1)
+        settings.FromConfig(args.user_conf, args.lg_model_name, SCENARIO, 1)
         log_output_settings = lg.LogOutputSettings()
         log_output_settings.outdir = args.output_log_dir
         log_output_settings.copy_summary_to_stdout = True
@@ -799,7 +809,7 @@ if __name__ == "__main__":
             unload_samples_from_ram
         )
         SUTToTest = lg.ConstructSUT(sut.issue_query, sut.flush_queries)
-        logging.info(f"MLPerf Loadgen: Starting test with {NUM_SAMPLES} samples in Offline mode...")
+        logging.info(f"MLPerf Loadgen: Starting test with {NUM_SAMPLES} samples in {SCENARIO} mode...")
         logging.info(f"Model: {MODEL_NAME}, Test Mode: {TEST_MODE}")
         if ENABLE_PROFILER:
             logging.info(f"Torch profiler is enabled - all batches will be profiled in a single trace file in {PROFILER_DIR}")
