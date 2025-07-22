@@ -1,13 +1,64 @@
-CHECKPOINT_PATH="${CHECKPOINT_PATH:meta-llama/Meta-Llama-3.1-8B-Instruct}"
-DATASET_PATH="${DATASET_PATH:cnn_eval.json}"
+# ============================================================================
+# This script was generated and refactored with the help of AI (OpenAI GPT-4),
+# with additional modifications and review by the author: <Naveen Miriyalu nmiriyal@redhat.com>.
+#
+# Disclaimer: This script is provided as-is, without warranty of any kind.
+# Please review and test before using in production or submitting to MLPerf.
+# ============================================================================
 
-python -u main.py --scenario Offline \
-	--model-path ${CHECKPOINT_PATH} \
-	--batch-size 16 \
-	--dtype float16 \
-	--user-conf user.conf \
-	--total-sample-count 13368 \
-	--dataset-path ${DATASET_PATH} \
-	--output-log-dir output \
-	--tensor-parallel-size ${GPU_COUNT} \
-	--vllm 2>&1 | tee offline.log
+# Example: Offline scenario with local vLLM
+python SUT_VLLM_SingleReplica.py \
+  --model-name <MODEL_NAME> \
+  --dataset-path <DATASET_PATH> \
+  --num-samples 13368 \
+  --max-model-len 2048 \
+  --max-num-seqs 512 \
+  --gpu-mem-util 0.9 \
+  --batch-size 32 \
+  --test-mode performance \
+  --scenario Offline \
+  --num-gpus 1 \
+  --pipeline-parallel-size 1 \
+  --swap-space 4 \
+  --log-level INFO \
+  --output-log-dir ./ \
+  --user-conf user.conf \
+  --lg-model-name llama3_1-8b \
+  --max-num-batched-tokens 4096
+
+# Example: Offline scenario with vLLM API
+python SUT_VLLM_SingleReplica.py \
+  --model-name <MODEL_NAME> \
+  --dataset-path <DATASET_PATH> \
+  --num-samples 13368 \
+  --max-model-len 2048 \
+  --max-num-seqs 512 \
+  --batch-size 32 \
+  --test-mode performance \
+  --scenario Offline \
+  --api-server-url http://localhost:8000 \
+  --log-level INFO \
+  --output-log-dir ./ \
+  --user-conf user.conf \
+  --lg-model-name llama3_1-8b
+
+# Example: MLPerf Server scenario with VLLMSingleSUTServer (multi-worker batching)
+python SUT_VLLM_SingleReplica.py \
+  --model-name <MODEL_NAME> \
+  --dataset-path <DATASET_PATH> \
+  --num-samples 13368 \
+  --max-model-len 2048 \
+  --max-num-seqs 512 \
+  --gpu-mem-util 0.9 \
+  --batch-size 32 \
+  --test-mode performance \
+  --scenario Server \
+  --num-gpus 1 \
+  --pipeline-parallel-size 1 \
+  --swap-space 4 \
+  --log-level INFO \
+  --output-log-dir ./ \
+  --user-conf user.conf \
+  --lg-model-name llama3_1-8b \
+  --max-num-batched-tokens 4096 \
+  --num-workers 4

@@ -1,3 +1,17 @@
+# ============================================================================
+# This file was generated and refactored with the help of AI (OpenAI GPT-4),
+# with additional modifications and review by the author: <Naveen Miriyalu nmiriyal@redhat.com>
+#
+# Disclaimer: This code is provided as-is, without warranty of any kind.
+# Please review and test before using in production or submitting to MLPerf.
+# ============================================================================
+"""
+SUT_VLLM_SingleReplica.py
+-------------------------
+Harness for running vLLM models with MLPerf Loadgen in both offline and server scenarios.
+Supports local vLLM, vLLM API, and async server batching with multi-worker support.
+"""
+
 import os
 import time
 import logging
@@ -23,7 +37,6 @@ import asyncio
 
 
 
-#os.environ["VLLM_TORCH_PROFILER_DIR"] = "./PROFILESFRESH"
 
 try:
     from vllm import LLM, SamplingParams
@@ -53,7 +66,9 @@ def unload_samples_from_ram(query_samples):
     return
 
 class VLLMSingleSUT:
+    """Implements the MLPerf SUT interface for local vLLM model. Uses per-instance logger."""
     def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, max_num_batched_tokens: int = None):
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.max_model_len = max_model_len
@@ -75,16 +90,16 @@ class VLLMSingleSUT:
         self.batch_counter = 0
         self.max_num_batched_tokens = max_num_batched_tokens
         self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368)
-        logging.info("Dataset Max          = %d", max(self.data_object.input_lens))
-        logging.info("Dataset Min          = %d", min(self.data_object.input_lens))
-        logging.info("Dataset TotalSamples = %d", len(self.data_object.input_lens))
+        self.logger.info("Dataset Max          = %d", max(self.data_object.input_lens))
+        self.logger.info("Dataset Min          = %d", min(self.data_object.input_lens))
+        self.logger.info("Dataset TotalSamples = %d", len(self.data_object.input_lens))
         self.max_num_batched_tokens = max_num_batched_tokens
         self._load_model()
 
     def _load_model(self):
         if self.enable_nvtx :
             torch.cuda.nvtx.range_push("loadmodel")
-        logging.info(f"Loading model '{self.model_name}' on single GPU...")
+        self.logger.info(f"Loading model '{self.model_name}' on single GPU...")
         self.llm = LLM(
             model=self.model_name,
             trust_remote_code=True,
@@ -97,7 +112,7 @@ class VLLMSingleSUT:
             disable_log_stats=False,
             max_num_batched_tokens=self.max_num_batched_tokens
         )
-        logging.info("Model loaded successfully.")
+        self.logger.info("Model loaded successfully.")
         self.sampling_params = SamplingParams(
             temperature=0.0,
             max_tokens=128,
@@ -123,7 +138,7 @@ class VLLMSingleSUT:
         batch_size = BATCH_SIZE
         total_samples = len(query_samples)
         num_batches = (total_samples + batch_size - 1) // batch_size
-        logging.info(f"SUT issue_query: Received {len(query_samples)} queries from Loadgen. Batch size: {batch_size}. Number of batches: {num_batches}.")
+        self.logger.info(f"SUT issue_query: Received {len(query_samples)} queries from Loadgen. Batch size: {batch_size}. Number of batches: {num_batches}.")
         batch_times = []
         # Initialize profiler once for all batches if enabled
         if self.enable_profiler and self.profiler is None:
@@ -143,7 +158,7 @@ class VLLMSingleSUT:
                 with_stack=True
             )
             self.profiler.start()
-            logging.info(f"Started torch profiler for all {num_batches} batches. Trace will be saved to {trace_file}")
+            self.logger.info(f"Started torch profiler for all {num_batches} batches. Trace will be saved to {trace_file}")
         for batch_idx in range(num_batches):
             start = batch_idx * batch_size
             end = min((batch_idx + 1) * batch_size, total_samples)
@@ -155,7 +170,7 @@ class VLLMSingleSUT:
             if self.sort_by_token_contents:
                 batch = sorted(batch, key=lambda q: tuple(self.data_object.input_ids[q.index]))
             # Optionally print sorted tokens
-            if self.print_sorted_tokens or logging.getLogger().isEnabledFor(logging.DEBUG):
+            if self.print_sorted_tokens or self.logger.isEnabledFor(logging.DEBUG):
                 print(f"Batch {batch_idx} sorted tokens:")
                 for i, q in enumerate(batch):
                     print(f"  {i:3d}: idx={q.index}, tokens={self.data_object.input_ids[q.index]}")
@@ -222,8 +237,8 @@ class VLLMSingleSUT:
                     query_index = original_query_indexes[i]
                     
                     # Detailed debug logging for output tokens
-                    logging.info(f"Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
-                    logging.debug(f"Token IDs: {token_ids}")
+                    self.logger.info(f"Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
+                    self.logger.debug(f"Token IDs: {token_ids}")
                     
                     if self.test_mode == "accuracy":
                         token_array = np.array(token_ids, dtype=np.int32)
@@ -248,7 +263,7 @@ class VLLMSingleSUT:
                         'batch_size': len(batch)
                     })
             except Exception as e:
-                logging.error(f"Error processing batch: {e}")
+                self.logger.error(f"Error processing batch: {e}")
                 for query_id in original_query_ids:
                     response = lg.QuerySampleResponse(query_id, 0, 0, 0)
                     lg.QuerySamplesComplete([response])
@@ -267,7 +282,7 @@ class VLLMSingleSUT:
         if self.enable_profiler and self.profiler is not None:
             self.profiler.stop()
             self.profiler = None
-            logging.info(f"Stopped torch profiler after processing {self.batch_counter} batches")
+            self.logger.info(f"Stopped torch profiler after processing {self.batch_counter} batches")
 
 
         # Print timing stats if enabled
@@ -301,12 +316,13 @@ class VLLMSingleSUT:
             """
 
     def flush_queries(self):
-        logging.info("SUT flush_queries: Flushing (no specific action for offline in this demo).")
+        self.logger.info("SUT flush_queries: Flushing (no specific action for offline in this demo).")
 
 class VLLMSingleSUTAPI:
-    """Completely separate class for handling vLLM API server communication"""
+    """Handles vLLM API server communication. Uses per-instance logger."""
     
     def __init__(self, model_name: str, dataset_path: str, api_server_url: str, max_model_len: int = 2048, test_mode: str = "performance", enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, enable_metrics_csv: bool = False, metrics_csv_path: str = "metrics.csv"):
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.api_server_url = api_server_url.rstrip('/')
@@ -334,10 +350,10 @@ class VLLMSingleSUTAPI:
         
         # Load dataset
         self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368 )
-        logging.info("Dataset = %d", len(self.data_object.input_ids))
-        logging.info("Dataset Max = %d", max(self.data_object.input_lens))
-        logging.info("Dataset Min = %d", min(self.data_object.input_lens))
-        logging.info("Dataset Len = %d", len(self.data_object.input_lens))
+        self.logger.info("Dataset = %d", len(self.data_object.input_ids))
+        self.logger.info("Dataset Max = %d", max(self.data_object.input_lens))
+        self.logger.info("Dataset Min = %d", min(self.data_object.input_lens))
+        self.logger.info("Dataset Len = %d", len(self.data_object.input_lens))
         
         # Wait for server to be ready
         self._wait_for_server_ready()
@@ -351,20 +367,20 @@ class VLLMSingleSUTAPI:
 
     def _wait_for_server_ready(self, timeout: int = 600):
         """Wait for the vLLM API server to be ready with timeout"""
-        logging.info(f"Waiting for vLLM API server at {self.api_server_url} to be ready (timeout: {timeout}s)...")
+        self.logger.info(f"Waiting for vLLM API server at {self.api_server_url} to be ready (timeout: {timeout}s)...")
         
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
                 response = requests.get(self.health_endpoint, timeout=10)
                 if response.status_code == 200:
-                    logging.info(f"vLLM API server at {self.api_server_url} is ready!")
+                    self.logger.info(f"vLLM API server at {self.api_server_url} is ready!")
                     self.server_ready = True
                     return
                 else:
-                    logging.warning(f"API server health check returned status {response.status_code}")
+                    self.logger.warning(f"API server health check returned status {response.status_code}")
             except Exception as e:
-                logging.debug(f"API server not ready yet: {e}")
+                self.logger.debug(f"API server not ready yet: {e}")
             
             time.sleep(5)  # Wait 5 seconds before next check
         
@@ -375,9 +391,9 @@ class VLLMSingleSUTAPI:
         try:
             from transformers import AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-            logging.info("Tokenizer initialized for detokenization")
+            self.logger.info("Tokenizer initialized for detokenization")
         except Exception as e:
-            logging.warning(f"Could not initialize tokenizer for detokenization: {e}")
+            self.logger.warning(f"Could not initialize tokenizer for detokenization: {e}")
             self.tokenizer = None
     
     def _detokenize_response(self, text_response: str) -> List[int]:
@@ -388,18 +404,18 @@ class VLLMSingleSUTAPI:
                 tokens = self.tokenizer.encode(text_response, add_special_tokens=False)
                 return tokens
             except Exception as e:
-                logging.warning(f"Error detokenizing response: {e}")
+                self.logger.warning(f"Error detokenizing response: {e}")
                 # Fallback: return a simple token representation
                 return [1, 2, 3]  # Placeholder tokens
         else:
             # No tokenizer available, return placeholder
-            logging.warning("No tokenizer available for detokenization, using placeholder tokens")
+            self.logger.warning("No tokenizer available for detokenization, using placeholder tokens")
             return [1, 2, 3]  # Placeholder tokens
     
     def issue_query(self, query_samples: List['lg.QuerySample']):
         """Handle queries by sending them to the vLLM API server"""
         if not self.server_ready:
-            logging.error("API server is not ready")
+            self.logger.error("API server is not ready")
             # Send error responses
             for q_sample in query_samples:
                 response = lg.QuerySampleResponse(q_sample.id, 0, 0, 0)
@@ -409,7 +425,7 @@ class VLLMSingleSUTAPI:
         batch_size = BATCH_SIZE
         total_samples = len(query_samples)
         num_batches = (total_samples + batch_size - 1) // batch_size
-        logging.info(f"API SUT issue_query: Received {len(query_samples)} queries from Loadgen. Batch size: {batch_size}. Number of batches: {num_batches}.")
+        self.logger.info(f"API SUT issue_query: Received {len(query_samples)} queries from Loadgen. Batch size: {batch_size}. Number of batches: {num_batches}.")
         batch_times = []
         
         for batch_idx in range(num_batches):
@@ -425,7 +441,7 @@ class VLLMSingleSUTAPI:
                 batch = sorted(batch, key=lambda q: tuple(self.data_object.input_ids[q.index]))
             
             # Optionally print sorted tokens
-            if self.print_sorted_tokens or logging.getLogger().isEnabledFor(logging.DEBUG):
+            if self.print_sorted_tokens or self.logger.isEnabledFor(logging.DEBUG):
                 print(f"Batch {batch_idx} sorted tokens:")
                 for i, q in enumerate(batch):
                     print(f"  {i:3d}: idx={q.index}, tokens={self.data_object.input_ids[q.index]}")
@@ -487,7 +503,7 @@ class VLLMSingleSUTAPI:
                                 text_prompt = self.tokenizer.decode(self.data_object.input_ids[q_sample.index], skip_special_tokens=True)
                                 text_prompts.append(text_prompt)
                             except Exception as e:
-                                logging.warning(f"Error decoding tokens for query {q_sample.id}: {e}")
+                                self.logger.warning(f"Error decoding tokens for query {q_sample.id}: {e}")
                                 # Fallback: use token IDs as string
                                 text_prompts.append(" ".join([str(t) for t in self.data_object.input_ids[q_sample.index]]))
                         else:
@@ -535,9 +551,9 @@ class VLLMSingleSUTAPI:
                     token_count = len(token_ids)
                     
                     # Detailed debug logging for output tokens
-                    logging.info(f"API Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
-                    logging.debug(f"API Token IDs: {token_ids}")
-                    logging.debug(f"API Text Response: {text_response}")
+                    self.logger.info(f"API Query ID: {query_id}, Query Index: {query_index}, Output Tokens: {token_count}")
+                    self.logger.debug(f"API Token IDs: {token_ids}")
+                    self.logger.debug(f"API Text Response: {text_response}")
                     
                     if self.test_mode == "accuracy":
                         token_array = np.array(token_ids, dtype=np.int32)
@@ -568,7 +584,7 @@ class VLLMSingleSUTAPI:
                     })
                 
             except Exception as e:
-                logging.error(f"Error processing API batch: {e}")
+                self.logger.error(f"Error processing API batch: {e}")
                 for query_id in original_query_ids:
                     response = lg.QuerySampleResponse(query_id, 0, 0, 0)
                     lg.QuerySamplesComplete([response])
@@ -599,11 +615,11 @@ class VLLMSingleSUTAPI:
                 print(f"    Batch {bt['batch_idx']:3d}: size={bt['batch_size']:4d}, duration={bt['duration']:.4f}s, api_generate={bt['api_generate'] if bt['api_generate'] is not None else 'N/A'}")
 
     def flush_queries(self):
-        logging.info("API SUT flush_queries: Flushing (no specific action for offline in this demo).")
+        self.logger.info("API SUT flush_queries: Flushing (no specific action for offline in this demo).")
 
     def _start_metrics_thread(self):
         def metrics_worker():
-            logging.info(f"Starting metrics collection thread, writing to {self.metrics_csv_path}")
+            self.logger.info(f"Starting metrics collection thread, writing to {self.metrics_csv_path}")
             with open(self.metrics_csv_path, mode='w', newline='') as csvfile:
                 writer = None
                 while not self.metrics_stop_event.is_set():
@@ -624,11 +640,11 @@ class VLLMSingleSUTAPI:
                             writer.writerow(metrics_dict)
                             csvfile.flush()
                         else:
-                            logging.warning(f"Metrics endpoint returned status {response.status_code}")
+                            self.logger.warning(f"Metrics endpoint returned status {response.status_code}")
                     except Exception as e:
-                        logging.warning(f"Error collecting metrics: {e}")
+                        self.logger.warning(f"Error collecting metrics: {e}")
                     self.metrics_stop_event.wait(1)  # 1 second interval
-            logging.info("Metrics collection thread stopped.")
+            self.logger.info("Metrics collection thread stopped.")
         self.metrics_thread = threading.Thread(target=metrics_worker, daemon=True)
         self.metrics_thread.start()
 
@@ -636,11 +652,13 @@ class VLLMSingleSUTAPI:
         if self.enable_metrics_csv and self.metrics_thread is not None:
             self.metrics_stop_event.set()
             self.metrics_thread.join()
-            logging.info("Metrics thread joined.")
+            self.logger.info("Metrics thread joined.")
 
 # Add VLLMSingleSUTServer class below, modeled after SUTServer in llama3.1-405b/SUT_VLLM.py
 class VLLMSingleSUTServer:
+    """Implements the MLPerf SUT interface for async server scenario. Uses per-instance logger."""
     def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, test_mode: str = "performance", num_gpus: int = 1, pipeline_parallel_size: int = 0, swap_space: int = 0, enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", enable_nvtx: bool = False, print_histogram: bool = False, sort_by_length: bool = False, sort_by_token_contents: bool = False, print_sorted_tokens: bool = False, print_timing: bool = False, max_num_batched_tokens: int = None, num_workers: int = 1, batch_size: int = 1):
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.max_model_len = max_model_len
@@ -689,7 +707,7 @@ class VLLMSingleSUTServer:
             top_p=1,
             top_k=1
         )
-        logging.info("AsyncLLMEngine loaded successfully.")
+        self.logger.info("AsyncLLMEngine loaded successfully.")
 
     def _start_workers(self):
         for j in range(self.num_workers):
@@ -751,14 +769,14 @@ class VLLMSingleSUTServer:
                 # For each output, stream tokens and complete
                 asyncio.run(self.stream_output(batch, results_generator, original_query_ids, original_query_indexes))
             except Exception as e:
-                logging.error(f"Error in process_queries: {e}")
+                self.logger.error(f"Error in process_queries: {e}")
 
     def issue_query(self, query_samples):
         for q in query_samples:
             self.query_queue.put(q)
 
     def flush_queries(self):
-        logging.info("Server SUT flush_queries: Flushing (no specific action in this demo).")
+        self.logger.info("Server SUT flush_queries: Flushing (no specific action in this demo).")
 
 if __name__ == "__main__":
     # Print command line and executable information

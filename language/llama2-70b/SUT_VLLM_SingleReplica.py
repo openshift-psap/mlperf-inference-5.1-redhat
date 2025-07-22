@@ -1,22 +1,36 @@
+# ============================================================================
+# This file was generated and refactored with the help of AI (OpenAI GPT-4),
+# with additional modifications and review by the author: <Naveen Miriyalu nmiriyal@redhat.com>
+#
+# Disclaimer: This code is provided as-is, without warranty of any kind.
+# Please review and test before using in production or submitting to MLPerf.
+# ============================================================================
+"""
+SUT_VLLM_SingleReplica.py
+-------------------------
+Harness for running vLLM models with MLPerf Loadgen in both offline and server scenarios.
+Supports local vLLM, vLLM API, and async server batching with multi-worker support.
+"""
+
 import os
-import time
-import logging
-import argparse
-import numpy as np
-from typing import List
-from dataset import Dataset
-from vllm import TokensPrompt
 import sys
+import time
+import argparse
+import logging
+import threading
+import queue
+import numpy as np
 import torch
 import pkg_resources
 from datetime import datetime
+from typing import List
+from dataset import Dataset
+from vllm import TokensPrompt
 from vllm.v1.metrics.reader import Counter, Gauge, Histogram, Vector
 import requests
 import json
-import threading
-from concurrent.futures import ThreadPoolExecutor
-import queue
 import csv
+from concurrent.futures import ThreadPoolExecutor
 
 
 try:
