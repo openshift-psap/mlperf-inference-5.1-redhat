@@ -173,7 +173,8 @@ class VLLMSingleSUT:
             max_tokens=128,   # Maximum output tokens
             min_tokens=1,     # Minimum output tokens
             top_p=1,         # Nucleus sampling parameter
-            top_k=1          # Top-k sampling parameter
+            top_k=1,          # Top-k sampling parameter
+            seed=42
         )
         
         # Display model configuration for debugging
@@ -356,7 +357,8 @@ class VLLMSingleSUT:
         
         # Process outputs and prepare responses for Loadgen
         responses_to_loadgen = []
-        for i, output in enumerate(outputs):
+        for i in range(len(outputs)):
+            output = outputs[i]
             token_ids = output.outputs[0].token_ids
             token_count = len(token_ids)
             query_id = original_query_ids[i]
@@ -365,6 +367,7 @@ class VLLMSingleSUT:
             # Log output information
             self.logger.info(f"Query ID: {query_id}, Index: {query_index:5d}, Tokens: {token_count}")
             self.logger.debug(f"Token IDs: {token_ids}")
+            self.logger.debug(f"Token text: {output.outputs[0].text}")
             
             # Create response based on test mode
             if self.test_mode == "accuracy":
@@ -374,14 +377,16 @@ class VLLMSingleSUT:
                 response_data = token_array.ctypes.data
                 response_size = len(token_bytes)
                 response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+                lg.QuerySamplesComplete([response])
             else:
                 # For performance testing, only token count matters
                 response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
             
-            responses_to_loadgen.append(response)
+            if self.test_mode == "performance":
+                responses_to_loadgen.append(response)
         
         # Send responses to Loadgen
-        if responses_to_loadgen:
+        if responses_to_loadgen and self.test_mode == "performance":
             lg.QuerySamplesComplete(responses_to_loadgen)
         
         self.batch_counter += 1
@@ -735,13 +740,15 @@ class VLLMSingleSUTAPI:
                 response_data = token_array.ctypes.data
                 response_size = len(token_bytes)
                 response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+                lg.QuerySamplesComplete([response])
             else:
                 response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
             
-            responses_to_loadgen.append(response)
+            if self.test_mode == "performance":
+                responses_to_loadgen.append(response)
         
         # Send responses to Loadgen
-        if responses_to_loadgen:
+        if responses_to_loadgen and self.test_mode == "performance":
             lg.QuerySamplesComplete(responses_to_loadgen)
 
     def _handle_api_batch_error(self, original_query_ids, batch_start, batch_times, batch_idx, batch_size):
@@ -916,7 +923,8 @@ class VLLMSingleSUTServer:
             max_tokens=128,   # Maximum output tokens
             min_tokens=1,     # Minimum output tokens
             top_p=1,         # Nucleus sampling parameter
-            top_k=1          # Top-k sampling parameter
+            top_k=1,          # Top-k sampling parameter
+            seed=42          # Top-k sampling parameter
         )
         
         self.logger.info("AsyncLLMEngine loaded successfully.")
