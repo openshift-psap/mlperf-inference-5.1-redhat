@@ -11,10 +11,9 @@ python SUT_VLLM_SingleReplica.py \
   --model-name <MODEL_NAME> \
   --dataset-path <DATASET_PATH> \
   --num-samples 13368 \
-  --max-model-len 2048 \
-  --max-num-seqs 512 \
+  --max-num-seqs 1024 \
   --gpu-mem-util 0.9 \
-  --batch-size 32 \
+  --batch-size 13368 \
   --test-mode performance \
   --scenario Offline \
   --num-gpus 1 \
@@ -31,9 +30,7 @@ python SUT_VLLM_SingleReplica.py \
   --model-name <MODEL_NAME> \
   --dataset-path <DATASET_PATH> \
   --num-samples 13368 \
-  --max-model-len 2048 \
-  --max-num-seqs 512 \
-  --batch-size 32 \
+  --batch-size 13368 \
   --test-mode performance \
   --scenario Offline \
   --api-server-url http://localhost:8000 \
@@ -47,10 +44,9 @@ python SUT_VLLM_SingleReplica.py \
   --model-name <MODEL_NAME> \
   --dataset-path <DATASET_PATH> \
   --num-samples 13368 \
-  --max-model-len 2048 \
   --max-num-seqs 512 \
   --gpu-mem-util 0.9 \
-  --batch-size 32 \
+  --batch-size 13368 \
   --test-mode performance \
   --scenario Server \
   --num-gpus 1 \
