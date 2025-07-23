@@ -717,7 +717,8 @@ class VLLMSingleSUTAPI:
         """Process API responses and send to Loadgen"""
         responses_to_loadgen = []
         
-        for i, choice in enumerate(choices):
+        for i in range(len(choices)):
+            choice = choices[i]
             query_id = original_query_ids[i]
             query_index = original_query_indexes[i]
             
