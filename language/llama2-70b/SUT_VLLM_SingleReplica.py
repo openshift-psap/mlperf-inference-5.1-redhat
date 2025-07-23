@@ -350,7 +350,8 @@ class VLLMSingleSUT:
         
         # Process outputs and prepare responses for Loadgen
         responses_to_loadgen = []
-        for i, output in enumerate(outputs):
+        for i in range(len(outputs)):
+            output = outputs[i]
             token_ids = output.outputs[0].token_ids
             token_count = len(token_ids)
             query_id = original_query_ids[i]
@@ -367,14 +368,16 @@ class VLLMSingleSUT:
                 response_data = token_array.ctypes.data
                 response_size = len(token_bytes)
                 response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+                lg.QuerySamplesComplete([response])
             else:
                 # For performance testing, only token count matters
                 response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
             
-            responses_to_loadgen.append(response)
+            if self.test_mode == "performance":
+                responses_to_loadgen.append(response)
         
         # Send responses to Loadgen
-        if responses_to_loadgen:
+        if responses_to_loadgen and self.test_mode == "performance":
             lg.QuerySamplesComplete(responses_to_loadgen)
         
         self.batch_counter += 1
@@ -720,7 +723,8 @@ class VLLMSingleSUTAPI:
         """Process API responses and send to Loadgen"""
         responses_to_loadgen = []
         
-        for i, choice in enumerate(choices):
+        for i in range(len(choices)):
+            choice = choices[i]
             query_id = original_query_ids[i]
             query_index = original_query_indexes[i]
             
@@ -741,13 +745,15 @@ class VLLMSingleSUTAPI:
                 response_data = token_array.ctypes.data
                 response_size = len(token_bytes)
                 response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+                lg.QuerySamplesComplete([response])
             else:
                 response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
             
-            responses_to_loadgen.append(response)
+            if self.test_mode == "performance":
+                responses_to_loadgen.append(response)
         
         # Send responses to Loadgen
-        if responses_to_loadgen:
+        if responses_to_loadgen and self.test_mode == "performance":
             lg.QuerySamplesComplete(responses_to_loadgen)
 
     def _handle_api_batch_error(self, original_query_ids, batch_start, batch_times, batch_idx, batch_size):
@@ -1291,6 +1297,11 @@ if __name__ == "__main__":
         log_settings = lg.LogSettings()
         log_settings.log_output = log_output_settings
         log_settings.enable_trace = False
+
+        # Create the output directory if it does not exist
+        if not os.path.exists(args.output_log_dir):
+            os.makedirs(args.output_log_dir)
+
 
         # Create Query Sample Library
         qsl = lg.ConstructQSL(24576, NUM_SAMPLES, load_samples_to_ram, unload_samples_from_ram)

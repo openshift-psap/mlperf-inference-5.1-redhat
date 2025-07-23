@@ -1353,6 +1353,10 @@ if __name__ == "__main__":
         log_settings.log_output = log_output_settings
         log_settings.enable_trace = False
 
+        #Create the output directory if it doesn't exist
+        if not os.path.exists(args.output_log_dir):
+            os.makedirs(args.output_log_dir)
+
         # Create Query Sample Library
         qsl = lg.ConstructQSL(13368, NUM_SAMPLES, load_samples_to_ram, unload_samples_from_ram)
         
