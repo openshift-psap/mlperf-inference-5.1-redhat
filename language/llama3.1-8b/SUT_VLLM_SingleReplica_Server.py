@@ -41,6 +41,7 @@ from vllm import AsyncLLMEngine, AsyncEngineArgs
 import asyncio
 from collections import defaultdict
 from random import shuffle
+from openai import OpenAI
 
 
 # Import vLLM components with error handling
@@ -114,7 +115,6 @@ class VLLMSingleSUTAPI:
         self.api_server_url = api_server_url.rstrip('/')
         self.max_model_len = max_model_len
         self.test_mode = test_mode
-        self.query_queue = queue.Queue()
         # Performance and debugging options
         self.enable_profiler = enable_profiler
         self.profiler_dir = profiler_dir
@@ -156,22 +156,25 @@ class VLLMSingleSUTAPI:
         self.num_workers = 1
         self.worker_threads = [None] * self.num_workers
         self.first_token_queue = queue.Queue()
+        self.query_queue = queue.Queue()
 
-        self.logger.info(f"Starting {self.num_workers} workers")
+
+        # Start metrics collection if enabled
+        if self.enable_metrics_csv:
+            self._start_metrics_thread()
+
+    def start(self):
+
+        print(f"Starting {self.num_workers} workers")
         # Create worker threads
-        
-        worker = threading.Thread(target=self.process_queries)
-        worker.start()
-        self.worker_threads[0] = worker
+        for j in range(self.num_workers):
+            worker = threading.Thread(target=self.process_queries)
+            worker.start()
+            self.worker_threads[j] = worker
 
         # Create first token response thread
         self.ft_response_thread = threading.Thread(target=self.process_first_tokens)
         self.ft_response_thread.start()
-
-        
-        # Start metrics collection if enabled
-        if self.enable_metrics_csv:
-            self._start_metrics_thread()
 
     def process_first_tokens(self):
 
@@ -179,7 +182,7 @@ class VLLMSingleSUTAPI:
             first_token_item = self.first_token_queue.get()
 
             if first_token_item is None:
-                log.info("Exiting First token response thread")
+                self.logger.info("Exiting First token response thread")
                 break
 
             first_tokens, response_id = first_token_item
@@ -190,6 +193,31 @@ class VLLMSingleSUTAPI:
             lg.FirstTokenComplete(response)
     
     def stream_api_vllm(self, input, response_ids):
+        """        
+        client = OpenAI(
+        # defaults to os.environ.get("OPENAI_API_KEY")
+        api_key="EMPTY",
+        base_url="http://0.0.0.0:8000/v1/"
+        )
+
+        models = client.models.list()
+        model = models.data[0].id
+        self.logger.info(f"{models}")
+
+        # Completion API
+        completion = client.completions.create(
+            model=self.model_name,
+            prompt=input,
+            echo=False,
+            stream=True,
+            max_tokens=128
+        )
+
+        for c in completion:
+            self.logger.info(f"{c}")
+        """
+
+        
         headers = {
             'Content-Type': 'application/json',
         }
@@ -198,7 +226,8 @@ class VLLMSingleSUTAPI:
             'model': self.model_name,
             'prompt': input,
             'max_tokens': 128,
-            'temperature': 0,
+            'min_tokens':1,
+            'temperature': 0.0,
             'stream': True,
             'top_p':1.0,
             'top_k':1.0,
@@ -219,15 +248,31 @@ class VLLMSingleSUTAPI:
                     verify=False,
                     stream=True
                 ) as resp:
+                    if resp.status_code != 200:
+                        self.logger.error(f"API server returned status {resp.status_code}: {resp.text}")
+                        continue
+                    #self.logger.info(f"Response: {type(resp)}")
+
                     for line in resp.iter_lines():
                         if line:
-                            decoded = line.decode()
+                            #self.logger.info(f"Line: {line}")
+                            decoded = line.decode("utf-8")
+                            #self.logger.info(f"Decoded: {decoded}")
+
+                            #if decoded.startswith("b'data: "):
+                            #   data = decoded[len("b'data: "):]
+                            
+                            #decoded = json.loads(line.decode())
+                            #self.logger.info(f"Decoded: {decoded}")
                             if decoded.startswith("data") and "[DONE]" not in decoded:
-                                data = json.loads(decoded[6:])
-                                finish_reason = data["choices"][0]["finish_reason"]
-                                stop_reason = data["choices"][0]["stop_reason"]
+                                data = json.loads(decoded[len("data: "):])
+                                #self.logger.info(f"Data: {data}")
+                                finish_reason = data["choices"][0].get("finish_reason")
+                                #self.logger.info(f"Finish reason: {finish_reason}")
+                                stop_reason   = data["choices"][0].get("stop_reason")
+                                #self.logger.info(f"Stop reason: {stop_reason}")
                                 if (finish_reason is not None) or (stop_reason is not None):
-                                    if finish_reason == "stop":
+                                    if finish_reason == "length":
                                         token_s = self.tokenizer.eos_token
                                         token_s_cache.append(token_s)
                                     else:
@@ -252,6 +297,7 @@ class VLLMSingleSUTAPI:
 
                 s.close()
                 if token_s_cache:
+                    self.logger.info(f"Request completed! {len(token_s_cache)} tokens")
                     #print("Request completed!")
                     #print(token_s_cache)
                     #print("".join(token_s_cache))
@@ -259,6 +305,7 @@ class VLLMSingleSUTAPI:
             except Exception as e:
                 s.close()
                 print(f"Connection failure: {e}")
+        
     
     def process_queries(self):
         """Processor of the queued queries. User may choose to add batching logic """
@@ -272,6 +319,7 @@ class VLLMSingleSUTAPI:
 
             self.logger.info(f"Number of threads: {threading.active_count()}")
             threading.Thread(target=self.async_process_query, args=(input_ids_tensor, qitem.id)).start()
+            #self.async_process_query(input_ids_tensor, qitem.id)
           
 
 
@@ -282,6 +330,7 @@ class VLLMSingleSUTAPI:
         output_tokens = self.stream_api_vllm(decoded, response_ids)
 
         n_tokens = len(output_tokens)
+        self.logger.info(f"{response_ids} Number of tokens: {n_tokens}")
         if n_tokens <= 1:
             print("WARNING: caught low token count")
             print(input_ids_tensor)
@@ -592,6 +641,7 @@ class VLLMSingleSUTAPI:
     def flush_queries(self):
         """MLPerf Loadgen callback for flushing queries"""
         self.logger.info("API SUT flush queries called")
+        #self.stop()
 
     def _start_metrics_thread(self):
         """Start background thread for metrics collection"""
@@ -636,6 +686,16 @@ class VLLMSingleSUTAPI:
             self.metrics_stop_event.set()
             self.metrics_thread.join()
             self.logger.info("Metrics collection thread stopped")
+    
+    def stop(self):
+        for _ in range(self.num_workers):
+            self.query_queue.put(None)
+
+        for worker in self.worker_threads:
+            worker.join()
+
+        self.first_token_queue.put(None)
+        self.ft_response_thread.join()
 
 
 # ============================================================================
@@ -882,6 +942,7 @@ if __name__ == "__main__":
         if not os.path.exists(args.output_log_dir):
             os.makedirs(args.output_log_dir)
 
+        sut.start()
         # Create Query Sample Library
         qsl = lg.ConstructQSL(13368, NUM_SAMPLES, load_samples_to_ram, unload_samples_from_ram)
         
@@ -904,6 +965,7 @@ if __name__ == "__main__":
         if args.enable_nvtx:
             logging.info("NVTX profiling enabled")
 
+        
         # Run the test
         lg.StartTestWithLogSettings(SUTToTest, qsl, settings, log_settings)
 
@@ -911,6 +973,7 @@ if __name__ == "__main__":
         logging.info("=" * 50)
         logging.info("MLPerf TEST COMPLETED SUCCESSFULLY")
         logging.info("=" * 50)
+        sut.stop()
 
         # Cleanup
         if args.api_server_url and args.enable_metrics_csv and hasattr(sut, 'stop_metrics_thread'):
