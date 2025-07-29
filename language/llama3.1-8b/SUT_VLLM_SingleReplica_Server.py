@@ -791,7 +791,7 @@ if __name__ == "__main__":
     lg_group = parser.add_argument_group('MLPerf Loadgen')
     lg_group.add_argument("--user-conf", type=str, default="user.conf", 
                         help="User config for LoadGen settings")
-    lg_group.add_argument("--audit-conf", type=str, default=None,
+    lg_group.add_argument("--audit-conf", type=str, default="",
                         help="Audit config for LoadGen settings")
     lg_group.add_argument("--lg-model-name", type=str, default="llama3_1-8b", 
                         choices=["llama3_1-8b", "llama3_1-8b-interactive", "test-model"], 
