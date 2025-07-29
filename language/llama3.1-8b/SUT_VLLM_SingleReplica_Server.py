@@ -317,7 +317,7 @@ class VLLMSingleSUTAPI:
 
             input_ids_tensor = self.data_object.input_ids[qitem.index]
 
-            self.logger.info(f"Number of threads: {threading.active_count()}")
+            self.logger.debug(f"Number of threads: {threading.active_count()}")
             threading.Thread(target=self.async_process_query, args=(input_ids_tensor, qitem.id)).start()
             #self.async_process_query(input_ids_tensor, qitem.id)
           
