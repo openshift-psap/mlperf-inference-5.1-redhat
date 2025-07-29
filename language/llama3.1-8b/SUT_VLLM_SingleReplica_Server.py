@@ -939,10 +939,7 @@ if __name__ == "__main__":
             
         settings.use_token_latencies = True
         
-        # Apply target QPS if specified
-        if args.target_qps is not None:
-            settings.target_qps = args.target_qps
-            logging.info(f"Set target QPS to {args.target_qps}")
+       
         
         # Apply coalesce setting if specified
         if args.coalesce:
@@ -950,6 +947,11 @@ if __name__ == "__main__":
             logging.info("Enabled coalesce queries for LoadGen")
         
         settings.FromConfig(args.user_conf, args.lg_model_name, SCENARIO, 1)
+
+         # Apply target QPS if specified
+        if args.target_qps is not None:
+            settings.target_qps = args.target_qps
+            logging.info(f"Set target QPS to {args.target_qps}")
 
         # Configure logging settings
         log_output_settings = lg.LogOutputSettings()
