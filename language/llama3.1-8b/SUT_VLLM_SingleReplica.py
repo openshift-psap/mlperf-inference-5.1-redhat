@@ -39,6 +39,8 @@ import csv
 import array
 from vllm import AsyncLLMEngine, AsyncEngineArgs
 import asyncio
+from collections import defaultdict
+from random import shuffle
 
 
 # Import vLLM components with error handling
@@ -101,7 +103,7 @@ class VLLMSingleSUT:
                  enable_nvtx: bool = False, print_histogram: bool = False, 
                  sort_by_length: bool = False, sort_by_token_contents: bool = False, 
                  print_sorted_tokens: bool = False, print_timing: bool = False, 
-                 max_num_batched_tokens: int = None):
+                 max_num_batched_tokens: int = None, kv_cache_dtype: str = "auto"):
         
         # Initialize per-instance logger
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -127,10 +129,12 @@ class VLLMSingleSUT:
         self.sort_by_token_contents = sort_by_token_contents
         self.print_sorted_tokens = print_sorted_tokens
         self.print_timing = print_timing
+        self.kv_cache_dtype = kv_cache_dtype
         
         # Runtime state
         self.profiler = None
         self.batch_counter = 0
+        self._padded_tokens = {}  # For bucketing and padding
         
         # Load dataset and display statistics
         self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=13368)
@@ -150,6 +154,8 @@ class VLLMSingleSUT:
             torch.cuda.nvtx.range_push("loadmodel")
             
         self.logger.info(f"Loading model '{self.model_name}' with {self.num_gpus} GPU(s)...")
+        if self.kv_cache_dtype != "auto":
+            self.logger.info(f"Using KV cache dtype: {self.kv_cache_dtype}")
         
         # Create LLM instance with all configuration parameters
         self.llm = LLM(
@@ -162,7 +168,8 @@ class VLLMSingleSUT:
             pipeline_parallel_size=self.pipeline_parallel_size,
             swap_space=self.swap_space,
             disable_log_stats=False,
-            max_num_batched_tokens=self.max_num_batched_tokens
+            max_num_batched_tokens=self.max_num_batched_tokens,
+            kv_cache_dtype=self.kv_cache_dtype
         )
         
         self.logger.info("Model loaded successfully.")
@@ -222,13 +229,14 @@ class VLLMSingleSUT:
             
             # Apply sorting options if requested
             batch = self._apply_batch_sorting(batch)
+            batch = self.bucket_and_pad_without_batching(batch)
             
             # Print debug information if requested
             if self.print_sorted_tokens or self.logger.isEnabledFor(logging.DEBUG):
                 self._print_batch_debug_info(batch_idx, batch)
             
-            # Prepare batch data
-            prompts_to_process = [TokensPrompt(prompt_token_ids=self.data_object.input_ids[q.index]) 
+            # Prepare batch data - use padded tokens if available, otherwise original
+            prompts_to_process = [TokensPrompt(prompt_token_ids=self._padded_tokens.get(q.index, self.data_object.input_ids[q.index])) 
                                 for q in batch]
             original_query_ids = [q.id for q in batch]
             original_query_indexes = [q.index for q in batch]
@@ -286,6 +294,78 @@ class VLLMSingleSUT:
         elif self.sort_by_token_contents:
             batch = sorted(batch, key=lambda q: tuple(self.data_object.input_ids[q.index]))
         return batch
+
+    def bucket_and_pad_without_batching(self, query_samples: List['lg.QuerySample'], 
+                                       bucket_sizes: List[int] = [128, 256, 384, 512, 1024, 1536, 2048],
+                                       shuffle_within_buckets: bool = False) -> List['lg.QuerySample']:
+        """
+        Buckets and pads query samples based on token length, but does NOT group into batch_size.
+
+        Args:
+        query_samples: List of MLPerf QuerySample objects
+        bucket_sizes: Length thresholds for bucketing
+        shuffle_within_buckets: Whether to shuffle samples inside buckets
+
+        Returns:
+        List of QuerySample objects (potentially reordered) with padded tokens stored
+        """
+        # Get EOS token for padding
+        try:
+            tokenizer = self.llm.llm_engine.tokenizer
+            if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
+                pad_token_id = tokenizer.eos_token_id
+            else:
+                pad_token_id = 2  # Common EOS token fallback
+        except:
+            pad_token_id = 2  # Fallback
+        
+        buckets = defaultdict(list)
+        
+        # Store original token IDs for each query sample
+        self._padded_tokens = {}
+
+        # Assign query samples to the smallest bucket that fits
+        for q_sample in query_samples:
+            original_tokens = self.data_object.input_ids[q_sample.index]
+            prompt_len = len(original_tokens)
+            
+            # Find appropriate bucket
+            assigned_bucket = None
+            for b in bucket_sizes:
+                if prompt_len <= b:
+                    assigned_bucket = b
+                    break
+            
+            if assigned_bucket is None:
+                assigned_bucket = bucket_sizes[-1]  # Use largest bucket
+            
+            buckets[assigned_bucket].append((q_sample, original_tokens))
+
+        reordered_samples = []
+
+        self.logger.info("🔍 Bucket counts:")
+        for b in sorted(bucket_sizes):
+            bucket_data = buckets[b]
+            if not bucket_data:
+                continue
+
+            if shuffle_within_buckets:
+                shuffle(bucket_data)
+
+            self.logger.info(f"  Bucket {b:>4} tokens → {len(bucket_data)} queries")
+
+            # Pad tokens and store mapping
+            for q_sample, original_tokens in bucket_data:
+                if len(original_tokens) < b:
+                    padded_tokens = original_tokens + [pad_token_id] * (b - len(original_tokens))
+                else:
+                    padded_tokens = original_tokens[:b]  # Truncate if needed
+                
+                # Store padded tokens for this query
+                self._padded_tokens[q_sample.index] = padded_tokens
+                reordered_samples.append(q_sample)
+
+        return reordered_samples
 
     def _print_batch_debug_info(self, batch_idx, batch):
         """Print debug information for the current batch"""
@@ -490,6 +570,7 @@ class VLLMSingleSUTAPI:
         # Runtime state
         self.batch_counter = 0
         self.server_ready = False
+        self._padded_tokens = {}  # For bucketing and padding
         
         # Metrics collection
         self.enable_metrics_csv = enable_metrics_csv
@@ -584,6 +665,7 @@ class VLLMSingleSUTAPI:
             
             # Apply sorting if requested
             batch = self._apply_batch_sorting(batch)
+            batch = self.bucket_and_pad_without_batching(batch)
             
             # Debug information
             if self.print_sorted_tokens or self.logger.isEnabledFor(logging.DEBUG):
@@ -633,6 +715,78 @@ class VLLMSingleSUTAPI:
         elif self.sort_by_token_contents:
             batch = sorted(batch, key=lambda q: tuple(self.data_object.input_ids[q.index]))
         return batch
+
+    def bucket_and_pad_without_batching(self, query_samples: List['lg.QuerySample'], 
+                                       bucket_sizes: List[int] = [128, 256, 384, 512, 1024, 1536, 2048],
+                                       shuffle_within_buckets: bool = False) -> List['lg.QuerySample']:
+        """
+        Buckets and pads query samples based on token length, but does NOT group into batch_size.
+
+        Args:
+        query_samples: List of MLPerf QuerySample objects
+        bucket_sizes: Length thresholds for bucketing
+        shuffle_within_buckets: Whether to shuffle samples inside buckets
+
+        Returns:
+        List of QuerySample objects (potentially reordered) with padded tokens stored
+        """
+        # Get EOS token for padding (simplified for API)
+        try:
+            if self.tokenizer and hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
+                pad_token_id = self.tokenizer.eos_token_id
+            else:
+                pad_token_id = 2  # Common EOS token fallback
+        except:
+            pad_token_id = 2  # Fallback
+        
+        buckets = defaultdict(list)
+        
+        # Store original token IDs for each query sample
+        self._padded_tokens = {}
+
+        # Assign query samples to the smallest bucket that fits
+        for q_sample in query_samples:
+            original_tokens = self.data_object.input_ids[q_sample.index]
+            prompt_len = len(original_tokens)
+            
+            # Find appropriate bucket
+            assigned_bucket = None
+            for b in bucket_sizes:
+                if prompt_len <= b:
+                    assigned_bucket = b
+                    break
+            
+            if assigned_bucket is None:
+                assigned_bucket = bucket_sizes[-1]  # Use largest bucket
+            
+            buckets[assigned_bucket].append((q_sample, original_tokens))
+
+        reordered_samples = []
+
+        self.logger.info("🔍 API Bucket counts:")
+        for b in sorted(bucket_sizes):
+            bucket_data = buckets[b]
+            if not bucket_data:
+                continue
+
+            if shuffle_within_buckets:
+                shuffle(bucket_data)
+
+            self.logger.info(f"  Bucket {b:>4} tokens → {len(bucket_data)} queries")
+
+            # Pad tokens and store mapping
+            for q_sample, original_tokens in bucket_data:
+                if len(original_tokens) < b:
+                    padded_tokens = original_tokens + [pad_token_id] * (b - len(original_tokens))
+                else:
+                    padded_tokens = original_tokens[:b]  # Truncate if needed
+                
+                # Store padded tokens for this query
+                self._padded_tokens[q_sample.index] = padded_tokens
+                reordered_samples.append(q_sample)
+
+        return reordered_samples
+
 
     def _print_batch_debug_info(self, batch_idx, batch):
         """Print debug information for API batch"""
@@ -697,20 +851,23 @@ class VLLMSingleSUTAPI:
         """Convert token IDs to text prompts for API"""
         text_prompts = []
         for q_sample in batch:
+            # Use original tokens for decoding (not padded ones) for better text quality
+            tokens_to_use = self.data_object.input_ids[q_sample.index]
+            
             if self.tokenizer:
                 try:
                     text_prompt = self.tokenizer.decode(
-                        self.data_object.input_ids[q_sample.index], 
+                        tokens_to_use, 
                         skip_special_tokens=True
                     )
                     text_prompts.append(text_prompt)
                 except Exception as e:
                     self.logger.warning(f"Error decoding tokens for query {q_sample.id}: {e}")
                     # Fallback to token ID string
-                    text_prompts.append(" ".join([str(t) for t in self.data_object.input_ids[q_sample.index]]))
+                    text_prompts.append(" ".join([str(t) for t in tokens_to_use]))
             else:
                 # No tokenizer available, use token IDs as string
-                text_prompts.append(" ".join([str(t) for t in self.data_object.input_ids[q_sample.index]]))
+                text_prompts.append(" ".join([str(t) for t in tokens_to_use]))
         return text_prompts
 
     def _process_api_responses(self, choices, original_query_ids, original_query_indexes):
@@ -850,7 +1007,7 @@ class VLLMSingleSUTServer:
                  sort_by_length: bool = False, sort_by_token_contents: bool = False, 
                  print_sorted_tokens: bool = False, print_timing: bool = False, 
                  max_num_batched_tokens: int = None, num_workers: int = 1, 
-                 batch_size: int = 1):
+                 batch_size: int = 1, kv_cache_dtype: str = "auto"):
         
         # Initialize per-instance logger
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -876,6 +1033,7 @@ class VLLMSingleSUTServer:
         self.sort_by_token_contents = sort_by_token_contents
         self.print_sorted_tokens = print_sorted_tokens
         self.print_timing = print_timing
+        self.kv_cache_dtype = kv_cache_dtype
         
         # Server-specific configuration
         self.num_workers = num_workers
@@ -903,6 +1061,8 @@ class VLLMSingleSUTServer:
             torch.cuda.nvtx.range_push("server_loadmodel")
             
         self.logger.info(f"Loading AsyncLLMEngine for '{self.model_name}' with {self.num_gpus} GPU(s)...")
+        if self.kv_cache_dtype != "auto":
+            self.logger.info(f"Using KV cache dtype: {self.kv_cache_dtype}")
         
         # Create AsyncLLMEngine arguments
         self.engine_args = AsyncEngineArgs(
@@ -912,7 +1072,8 @@ class VLLMSingleSUTServer:
             max_num_seqs=self.max_num_seqs,
             pipeline_parallel_size=self.pipeline_parallel_size,
             swap_space=self.swap_space,
-            max_num_batched_tokens=self.max_num_batched_tokens
+            max_num_batched_tokens=self.max_num_batched_tokens,
+            kv_cache_dtype=self.kv_cache_dtype
         )
         
         # Create the async engine
@@ -1137,6 +1298,9 @@ if __name__ == "__main__":
                           help="Maximum number of batched tokens for vLLM")
     perf_group.add_argument("--num-workers", type=int, default=1, 
                           help="Number of worker threads for server scenario")
+    perf_group.add_argument("--kv-cache-dtype", type=str, default="auto", 
+                          choices=["auto", "fp8", "fp16", "fp32"], 
+                          help="Data type for KV cache (fp8 for memory efficiency)")
     
     # Scenario and Testing
     scenario_group = parser.add_argument_group('Scenario and Testing')
@@ -1168,6 +1332,8 @@ if __name__ == "__main__":
     lg_group = parser.add_argument_group('MLPerf Loadgen')
     lg_group.add_argument("--user-conf", type=str, default="user.conf", 
                         help="User config for LoadGen settings")
+    lg_group.add_argument("--audit-conf", type=str, default="",
+                        help="Audit config for LoadGen settings")
     lg_group.add_argument("--lg-model-name", type=str, default="llama3_1-8b", 
                         choices=["llama3_1-8b", "llama3_1-8b-interactive", "test-model"], 
                         help="Model name for LoadGen")
@@ -1236,6 +1402,7 @@ if __name__ == "__main__":
     SWAP_SPACE = args.swap_space
     MAX_NUM_BATCHED_TOKENS = args.max_num_batched_tokens
     NUM_WORKERS = args.num_workers
+    KV_CACHE_DTYPE = args.kv_cache_dtype
 
     # Validation
     if DATASET_PATH is None:
@@ -1299,7 +1466,8 @@ if __name__ == "__main__":
                 print_timing=args.print_timing,
                 max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
                 num_workers=NUM_WORKERS,
-                batch_size=BATCH_SIZE
+                batch_size=BATCH_SIZE,
+                kv_cache_dtype=KV_CACHE_DTYPE
             )
         else:
             # Use local model for offline scenario
@@ -1322,7 +1490,8 @@ if __name__ == "__main__":
                 sort_by_token_contents=args.sort_by_token_contents,
                 print_sorted_tokens=args.print_sorted_tokens,
                 print_timing=args.print_timing,
-                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS
+                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+                kv_cache_dtype=KV_CACHE_DTYPE
             )
 
         # ====================================================================
@@ -1374,17 +1543,30 @@ if __name__ == "__main__":
         logging.info(f"Batch Size: {BATCH_SIZE}")
         if SCENARIO == "Server":
             logging.info(f"Server Workers: {NUM_WORKERS}")
+        if args.audit_conf:
+            logging.info(f"Audit Config: {args.audit_conf}")
         if args.enable_profiler:
             logging.info(f"Profiling enabled - traces in {args.profiler_dir}")
         if args.enable_nvtx:
             logging.info("NVTX profiling enabled")
 
+        # Start timing measurement
+        test_start_time = time.time()
+        logging.info(f"Test start time: {datetime.fromtimestamp(test_start_time).strftime('%Y-%m-%d %H:%M:%S')}")
+        
         # Run the test
-        lg.StartTestWithLogSettings(SUTToTest, qsl, settings, log_settings)
+        lg.StartTestWithLogSettings(SUTToTest, qsl, settings, log_settings, args.audit_conf)
 
+        # End timing measurement
+        test_end_time = time.time()
+        test_duration = test_end_time - test_start_time
+        
         # Test completion
         logging.info("=" * 50)
         logging.info("MLPerf TEST COMPLETED SUCCESSFULLY")
+        logging.info("=" * 50)
+        logging.info(f"Test end time: {datetime.fromtimestamp(test_end_time).strftime('%Y-%m-%d %H:%M:%S')}")
+        logging.info(f"Total test execution time: {test_duration:.2f} seconds ({test_duration/60:.2f} minutes)")
         logging.info("=" * 50)
 
         # Cleanup

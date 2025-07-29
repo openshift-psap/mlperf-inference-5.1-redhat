@@ -1082,7 +1082,7 @@ if __name__ == "__main__":
                           help="Maximum sequences processed simultaneously")
     perf_group.add_argument("--gpu-mem-util", type=float, default=0.9, 
                           help="GPU memory utilization factor (0.0 to 1.0)")
-    perf_group.add_argument("--batch-size", type=int, default=3072, 
+    perf_group.add_argument("--batch-size", type=int, default=24576, 
                           help="Batch size for processing")
     perf_group.add_argument("--max-num-batched-tokens", type=int, default=None, 
                           help="Maximum number of batched tokens for vLLM")
@@ -1117,6 +1117,8 @@ if __name__ == "__main__":
     lg_group = parser.add_argument_group('MLPerf Loadgen')
     lg_group.add_argument("--user-conf", type=str, default="user.conf", 
                         help="User config for LoadGen settings")
+    lg_group.add_argument("--audit-conf", type=str, default="",
+                        help="Audit config for LoadGen settings")
     lg_group.add_argument("--lg-model-name", type=str, default="llama2-70b", 
                         choices=["llama2-70b", "llama2-70b-interactive", "test-model"], 
                         help="Model name for LoadGen")
@@ -1318,17 +1320,30 @@ if __name__ == "__main__":
         logging.info(f"Test Mode: {TEST_MODE}")
         logging.info(f"Samples: {NUM_SAMPLES}")
         logging.info(f"Batch Size: {BATCH_SIZE}")
+        if args.audit_conf:
+            logging.info(f"Audit Config: {args.audit_conf}")
         if args.enable_profiler:
             logging.info(f"Profiling enabled - traces in {args.profiler_dir}")
         if args.enable_nvtx:
             logging.info("NVTX profiling enabled")
 
+        # Start timing measurement
+        test_start_time = time.time()
+        logging.info(f"Test start time: {datetime.fromtimestamp(test_start_time).strftime('%Y-%m-%d %H:%M:%S')}")
+        
         # Run the test
-        lg.StartTestWithLogSettings(SUTToTest, qsl, settings, log_settings)
+        lg.StartTestWithLogSettings(SUTToTest, qsl, settings, log_settings, args.audit_conf)
 
+        # End timing measurement
+        test_end_time = time.time()
+        test_duration = test_end_time - test_start_time
+        
         # Test completion
         logging.info("=" * 50)
         logging.info("MLPerf TEST COMPLETED SUCCESSFULLY")
+        logging.info("=" * 50)
+        logging.info(f"Test end time: {datetime.fromtimestamp(test_end_time).strftime('%Y-%m-%d %H:%M:%S')}")
+        logging.info(f"Total test execution time: {test_duration:.2f} seconds ({test_duration/60:.2f} minutes)")
         logging.info("=" * 50)
 
         # Cleanup

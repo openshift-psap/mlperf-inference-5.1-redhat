@@ -994,7 +994,7 @@ if __name__ == "__main__":
             logging.info(f"Target QPS: {args.target_qps}")
         if args.coalesce:
             logging.info("Coalesce: Enabled")
-        if args.audit_conf is not None:
+        if args.audit_conf:
             logging.info(f"Audit Config: {args.audit_conf}")
         if args.enable_profiler:
             logging.info(f"Profiling enabled - traces in {args.profiler_dir}")
