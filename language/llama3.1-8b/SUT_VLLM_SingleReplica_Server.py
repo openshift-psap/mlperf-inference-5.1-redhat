@@ -941,10 +941,6 @@ if __name__ == "__main__":
             
         settings.use_token_latencies = True
         
-        # Apply audit configuration if specified
-        if args.audit_conf is not None:
-            settings.audit_config = args.audit_conf
-            logging.info(f"Set audit config to {args.audit_conf}")
         
         #
         
@@ -1010,7 +1006,7 @@ if __name__ == "__main__":
         logging.info(f"Test start time: {datetime.fromtimestamp(test_start_time).strftime('%Y-%m-%d %H:%M:%S')}")
         
         # Run the test
-        lg.StartTestWithLogSettings(SUTToTest, qsl, settings, log_settings)
+        lg.StartTestWithLogSettings(SUTToTest, qsl, settings, log_settings,args.audit_conf)
 
         # End timing measurement
         test_end_time = time.time()
