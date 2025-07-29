@@ -297,7 +297,7 @@ class VLLMSingleSUTAPI:
 
                 s.close()
                 if token_s_cache:
-                    self.logger.info(f"Request completed! {len(token_s_cache)} tokens")
+                    self.logger.debug(f"Request completed! {len(token_s_cache)} tokens")
                     #print("Request completed!")
                     #print(token_s_cache)
                     #print("".join(token_s_cache))
@@ -396,7 +396,7 @@ class VLLMSingleSUTAPI:
         batch_size = BATCH_SIZE
         total_samples = len(query_samples)
         for sample in query_samples:
-            self.logger.info(f"Issuing {sample.index} query")
+            self.logger.debug(f"Issuing {sample.index} query")
             self.query_queue.put(sample)
      
 
