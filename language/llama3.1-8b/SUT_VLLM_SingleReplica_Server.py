@@ -722,18 +722,6 @@ if __name__ == "__main__":
             print(f"  {name:<30} {version}")
     print("=" * 80)
 
-    # Set environment variables for optimal performance
-    os.environ['OMP_NUM_THREADS'] = "16"
-
-    # Set TORCH_CUDA_ARCH_LIST based on device properties
-    if torch.cuda.is_available():
-        props = torch.cuda.get_device_properties(0)
-        arch_str = f"{props.major}.{props.minor}"
-        os.environ['TORCH_CUDA_ARCH_LIST'] = arch_str
-        print(f"Set TORCH_CUDA_ARCH_LIST to {arch_str}")
-    else:
-        print("CUDA not available. Not setting TORCH_CUDA_ARCH_LIST")
-
     # ========================================================================
     # Command Line Argument Parsing
     # ========================================================================
@@ -782,6 +770,8 @@ if __name__ == "__main__":
     
     # Hardware Configuration
     hw_group = parser.add_argument_group('Hardware')
+    hw_group.add_argument("--cuda-device", type=str, default=None,
+                        help="CUDA device to use (e.g., '0', '1', '0,1'). Sets CUDA_VISIBLE_DEVICES environment variable")
     hw_group.add_argument("--num-gpus", type=int, default=1, 
                         help="Number of GPUs (tensor_parallel_size)")
     hw_group.add_argument("--pipeline-parallel-size", type=int, default=1, 
@@ -804,6 +794,10 @@ if __name__ == "__main__":
     lg_group.add_argument("--lg-model-name", type=str, default="llama3_1-8b", 
                         choices=["llama3_1-8b", "llama3_1-8b-interactive", "test-model"], 
                         help="Model name for LoadGen")
+    lg_group.add_argument("--target-qps", type=float, default=None,
+                        help="Target queries per second for LoadGen")
+    lg_group.add_argument("--coalesce", action="store_true", default=False,
+                        help="Enable coalesce option for LoadGen")
     
     # Profiling and Analysis
     prof_group = parser.add_argument_group('Profiling and Analysis')
@@ -842,10 +836,27 @@ if __name__ == "__main__":
     # Environment Setup
     # ========================================================================
     
+    # Set CUDA device if specified
+    if args.cuda_device is not None:
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
+        print(f"Set CUDA_VISIBLE_DEVICES to {args.cuda_device}")
+    
     # Set profiler directory if enabled
     if args.enable_profiler:
         os.environ["VLLM_TORCH_PROFILER_DIR"] = args.profiler_dir
     os.environ["VLLM_NO_USAGE_STATS"] = "0"
+
+    # Set environment variables for optimal performance
+    os.environ['OMP_NUM_THREADS'] = "16"
+
+    # Set TORCH_CUDA_ARCH_LIST based on device properties
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(0)
+        arch_str = f"{props.major}.{props.minor}"
+        os.environ['TORCH_CUDA_ARCH_LIST'] = arch_str
+        print(f"Set TORCH_CUDA_ARCH_LIST to {arch_str}")
+    else:
+        print("CUDA not available. Not setting TORCH_CUDA_ARCH_LIST")
 
     # Configure logging
     logging.basicConfig(
@@ -927,6 +938,17 @@ if __name__ == "__main__":
             settings.mode = lg.TestMode.PerformanceOnly
             
         settings.use_token_latencies = True
+        
+        # Apply target QPS if specified
+        if args.target_qps is not None:
+            settings.target_qps = args.target_qps
+            logging.info(f"Set target QPS to {args.target_qps}")
+        
+        # Apply coalesce setting if specified
+        if args.coalesce:
+            settings.coalesce_queries = True
+            logging.info("Enabled coalesce queries for LoadGen")
+        
         settings.FromConfig(args.user_conf, args.lg_model_name, SCENARIO, 1)
 
         # Configure logging settings
@@ -938,9 +960,10 @@ if __name__ == "__main__":
         log_settings.log_output = log_output_settings
         log_settings.enable_trace = False
 
-        #Create the output directory if it doesn't exist
+        # Create the output directory if it doesn't exist
         if not os.path.exists(args.output_log_dir):
             os.makedirs(args.output_log_dir)
+            logging.info(f"Created output log directory: {args.output_log_dir}")
 
         sut.start()
         # Create Query Sample Library
@@ -958,8 +981,14 @@ if __name__ == "__main__":
         logging.info(f"Test Mode: {TEST_MODE}")
         logging.info(f"Samples: {NUM_SAMPLES}")
         logging.info(f"Batch Size: {BATCH_SIZE}")
+        if args.cuda_device is not None:
+            logging.info(f"CUDA Device: {args.cuda_device}")
         if SCENARIO == "Server":
             logging.info(f"Server Workers: {NUM_WORKERS}")
+        if args.target_qps is not None:
+            logging.info(f"Target QPS: {args.target_qps}")
+        if args.coalesce:
+            logging.info("Coalesce: Enabled")
         if args.enable_profiler:
             logging.info(f"Profiling enabled - traces in {args.profiler_dir}")
         if args.enable_nvtx:
