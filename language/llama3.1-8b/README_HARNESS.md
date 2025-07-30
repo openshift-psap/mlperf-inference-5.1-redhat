@@ -343,5 +343,5 @@ usage: SUT_VLLM_SingleReplica.py [-h] [--model MODEL] [--task {auto,classify,dra
                                  [--print-timing] [--print-histogram] [--sort-by-length] [--sort-by-token-contents] [--print-sorted-tokens]
                                  [--api-server-url API_SERVER_URL] [--enable-metrics-csv] [--metrics-csv-path METRICS_CSV_PATH]
 
-Author: <YOUR NAME HERE>
+Author: <Naveen MIriyalu>
 AI Assistance: OpenAI GPT-4 

@@ -20,7 +20,6 @@ This module provides three main SUT (System Under Test) implementations:
 import os
 import sys
 import time
-import argparse
 import logging
 import threading
 import queue
@@ -32,6 +31,7 @@ from typing import List
 from dataset import Dataset
 from vllm import TokensPrompt
 from vllm.v1.metrics.reader import Counter, Gauge, Histogram, Vector
+from vllm.utils import FlexibleArgumentParser
 import requests
 import json
 import csv
@@ -89,15 +89,12 @@ class VLLMSingleSUT:
     Uses per-instance logger for proper logging behavior.
     """
     
-    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, 
-                 gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, 
-                 test_mode: str = "performance", num_gpus: int = 1, 
-                 pipeline_parallel_size: int = 0, swap_space: int = 0, 
+    def __init__(self, model_name: str, dataset_path: str, test_mode: str = "performance", 
                  enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", 
                  enable_nvtx: bool = False, print_histogram: bool = False, 
                  sort_by_length: bool = False, sort_by_token_contents: bool = False, 
                  print_sorted_tokens: bool = False, print_timing: bool = False, 
-                 max_num_batched_tokens: int = None, kv_cache_dtype: str = "auto"):
+                 **engine_args):
         
         # Initialize per-instance logger
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -105,15 +102,8 @@ class VLLMSingleSUT:
         # Store configuration parameters
         self.model_name = model_name
         self.dataset_path = dataset_path
-        self.max_model_len = max_model_len
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.max_num_seqs = max_num_seqs
         self.test_mode = test_mode
-        self.num_gpus = num_gpus
-        self.pipeline_parallel_size = pipeline_parallel_size
-        self.swap_space = swap_space
-        self.max_num_batched_tokens = max_num_batched_tokens
-        self.kv_cache_dtype = kv_cache_dtype
+        self.engine_args = engine_args
         
         # Performance and debugging options
         self.enable_profiler = enable_profiler
@@ -128,12 +118,12 @@ class VLLMSingleSUT:
         # Runtime state
         self.profiler = None
         self.batch_counter = 0
+        self._padded_tokens = {}  # For bucketing and padding
         
         # Load dataset and display statistics
-        self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, 
-                                 total_sample_count=24576, device="cpu")
+        self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, total_sample_count=24576)
         self.logger.info("Dataset loaded: %d samples", len(self.data_object.input_ids))
-        self.logger.info("Dataset statistics - Max: %d, Min: %d, Total: %d", 
+        self.logger.info("Dataset statistics - Max Input Tokens: %d, Min Input Tokens: %d, Total Samples: %d", 
                         max(self.data_object.input_lens), 
                         min(self.data_object.input_lens),
                         len(self.data_object.input_lens))
@@ -147,22 +137,11 @@ class VLLMSingleSUT:
         if self.enable_nvtx:
             torch.cuda.nvtx.range_push("loadmodel")
             
-        self.logger.info(f"Loading model '{self.model_name}' with {self.num_gpus} GPU(s)...")
+        self.logger.info(f"Loading model '{self.model_name}' with engine args: {self.engine_args}")
         
-        # Create LLM instance with all configuration parameters
-        self.llm = LLM(
-            model=self.model_name,
-            trust_remote_code=True,
-            gpu_memory_utilization=self.gpu_memory_utilization,
-            tensor_parallel_size=self.num_gpus,
-            max_model_len=self.max_model_len,
-            max_num_seqs=self.max_num_seqs,
-            pipeline_parallel_size=self.pipeline_parallel_size,
-            swap_space=self.swap_space,
-            disable_log_stats=False,
-            max_num_batched_tokens=self.max_num_batched_tokens,
-            kv_cache_dtype=self.kv_cache_dtype
-        )
+        # Create LLM instance with engine arguments
+        #self.llm = LLM(model=self.model_name, **self.engine_args)
+        self.llm = LLM(**self.engine_args)
         
         self.logger.info("Model loaded successfully.")
         
@@ -469,7 +448,7 @@ class VLLMSingleSUTAPI:
     """
     
     def __init__(self, model_name: str, dataset_path: str, api_server_url: str, 
-                 max_model_len: int = None, test_mode: str = "performance", 
+                 test_mode: str = "performance", 
                  enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", 
                  enable_nvtx: bool = False, print_histogram: bool = False, 
                  sort_by_length: bool = False, sort_by_token_contents: bool = False, 
@@ -483,7 +462,6 @@ class VLLMSingleSUTAPI:
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.api_server_url = api_server_url.rstrip('/')
-        self.max_model_len = max_model_len
         self.test_mode = test_mode
         
         # Performance and debugging options
@@ -673,8 +651,6 @@ class VLLMSingleSUTAPI:
                 "prompt": text_prompts,
                 "max_tokens": 1024,
                 "temperature": 0.0,
-                "top_p": 1.0,
-                "top_k": 1,
                 "stream": False
             }
             
@@ -879,16 +855,19 @@ if __name__ == "__main__":
     # Command Line Argument Parsing
     # ========================================================================
     
-    parser = argparse.ArgumentParser(
-        description="MLPerf vLLM Harness - Run vLLM models with MLPerf Loadgen",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    parser = FlexibleArgumentParser(
+        description="MLPerf vLLM Harness - Run vLLM models with MLPerf Loadgen"
     )
+
+    parser.set_defaults(max_model_len=2048,
+        trust_remote_code=True)
+    
+    # Add engine args from vLLM
+    from vllm import EngineArgs
+    EngineArgs.add_cli_args(parser)
     
     # Model and Data Configuration
     model_group = parser.add_argument_group('Model and Data')
-    model_group.add_argument("--model-name", type=str, 
-                           default="HuggingFaceH4/tiny-random-LlamaForCausalLM", 
-                           help="The name of the LLM model to load")
     model_group.add_argument("--dataset-path", type=str, default=None, 
                            help="Path to the processed dataset pickle file")
     model_group.add_argument("--num-samples", type=int, default=24576, 
@@ -896,19 +875,10 @@ if __name__ == "__main__":
     
     # Performance Configuration
     perf_group = parser.add_argument_group('Performance')
-    perf_group.add_argument("--max-model-len", type=int, default=2048, 
-                          help="Maximum sequence length for the model")
-    perf_group.add_argument("--max-num-seqs", type=int, default=512, 
-                          help="Maximum sequences processed simultaneously")
-    perf_group.add_argument("--gpu-mem-util", type=float, default=0.9, 
-                          help="GPU memory utilization factor (0.0 to 1.0)")
     perf_group.add_argument("--batch-size", type=int, default=24576, 
                           help="Batch size for processing")
-    perf_group.add_argument("--max-num-batched-tokens", type=int, default=None, 
-                          help="Maximum number of batched tokens for vLLM")
-    perf_group.add_argument("--kv-cache-dtype", type=str, default="auto", 
-                          choices=["auto", "fp8", "fp16", "fp32"], 
-                          help="Data type for KV cache (fp8 for memory efficiency)")
+    perf_group.add_argument("--num-workers", type=int, default=1, 
+                          help="Number of worker threads for server scenario")
     
     # Scenario and Testing
     scenario_group = parser.add_argument_group('Scenario and Testing')
@@ -918,15 +888,6 @@ if __name__ == "__main__":
     scenario_group.add_argument("--test-mode", type=str, default="performance", 
                               choices=["performance", "accuracy"], 
                               help="Test mode")
-    
-    # Hardware Configuration
-    hw_group = parser.add_argument_group('Hardware')
-    hw_group.add_argument("--num-gpus", type=int, default=1, 
-                        help="Number of GPUs (tensor_parallel_size)")
-    hw_group.add_argument("--pipeline-parallel-size", type=int, default=1, 
-                        help="Pipeline parallel size")
-    hw_group.add_argument("--swap-space", type=int, default=4, 
-                        help="Swap space parameter")
     
     # Logging and Output
     log_group = parser.add_argument_group('Logging and Output')
@@ -995,20 +956,23 @@ if __name__ == "__main__":
     )
 
     # Extract configuration variables
-    MODEL_NAME = args.model_name
+    MODEL_NAME = args.model
     DATASET_PATH = args.dataset_path
     NUM_SAMPLES = args.num_samples
-    MAX_MODEL_LEN = args.max_model_len
-    MAX_NUM_SEQS = args.max_num_seqs
-    GPU_MEM_UTIL = args.gpu_mem_util
     BATCH_SIZE = args.batch_size
     TEST_MODE = args.test_mode
     SCENARIO = args.scenario
-    NUM_GPUS = args.num_gpus
-    PIPELINE_PARALLEL_SIZE = args.pipeline_parallel_size
-    SWAP_SPACE = args.swap_space
-    MAX_NUM_BATCHED_TOKENS = args.max_num_batched_tokens
-    KV_CACHE_DTYPE = args.kv_cache_dtype
+    
+    # Extract engine arguments for LLM initialization
+    engine_args = {}
+    for key, value in vars(args).items():
+        if key not in ['dataset_path', 'num_samples', 'batch_size', 'test_mode', 'scenario', 
+                      'log_level', 'output_log_dir', 'user_conf', 'audit_conf', 'lg_model_name',
+                      'enable_profiler', 'profiler_dir', 'enable_nvtx', 'print_timing',
+                      'print_histogram', 'sort_by_length', 'sort_by_token_contents', 
+                      'print_sorted_tokens', 'api_server_url', 'enable_metrics_csv', 
+                      'metrics_csv_path', 'num_workers']:
+            engine_args[key] = value
 
     # Validation
     if DATASET_PATH is None:
@@ -1036,7 +1000,6 @@ if __name__ == "__main__":
                 model_name=MODEL_NAME,
                 dataset_path=DATASET_PATH,
                 api_server_url=args.api_server_url,
-                max_model_len=MAX_MODEL_LEN,
                 test_mode=TEST_MODE,
                 enable_profiler=args.enable_profiler,
                 profiler_dir=args.profiler_dir,
@@ -1055,13 +1018,7 @@ if __name__ == "__main__":
             sut = VLLMSingleSUT(
                 model_name=MODEL_NAME,
                 dataset_path=DATASET_PATH,
-                max_model_len=MAX_MODEL_LEN,
-                gpu_memory_utilization=GPU_MEM_UTIL,
-                max_num_seqs=MAX_NUM_SEQS,
                 test_mode=TEST_MODE,
-                num_gpus=NUM_GPUS,
-                pipeline_parallel_size=PIPELINE_PARALLEL_SIZE,
-                swap_space=SWAP_SPACE,
                 enable_profiler=args.enable_profiler,
                 profiler_dir=args.profiler_dir,
                 enable_nvtx=args.enable_nvtx,
@@ -1070,8 +1027,7 @@ if __name__ == "__main__":
                 sort_by_token_contents=args.sort_by_token_contents,
                 print_sorted_tokens=args.print_sorted_tokens,
                 print_timing=args.print_timing,
-                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
-                kv_cache_dtype=KV_CACHE_DTYPE
+                **engine_args
             )
 
         # ====================================================================
@@ -1122,7 +1078,7 @@ if __name__ == "__main__":
         logging.info(f"Test Mode: {TEST_MODE}")
         logging.info(f"Samples: {NUM_SAMPLES}")
         logging.info(f"Batch Size: {BATCH_SIZE}")
-        logging.info(f"KV Cache Dtype: {KV_CACHE_DTYPE}")
+        logging.info(f"Engine Args: {engine_args}")
         if args.audit_conf:
             logging.info(f"Audit Config: {args.audit_conf}")
         if args.enable_profiler:

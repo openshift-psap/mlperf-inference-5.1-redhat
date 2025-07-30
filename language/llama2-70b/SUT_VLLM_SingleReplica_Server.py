@@ -757,7 +757,7 @@ if __name__ == "__main__":
     
     # Scenario and Testing
     scenario_group = parser.add_argument_group('Scenario and Testing')
-    scenario_group.add_argument("--scenario", type=str, default="Offline", 
+    scenario_group.add_argument("--scenario", type=str, default="Server", 
                               choices=["Offline", "Server"], 
                               help="MLPerf scenario")
     scenario_group.add_argument("--test-mode", type=str, default="performance", 
@@ -934,6 +934,7 @@ if __name__ == "__main__":
             settings.mode = lg.TestMode.AccuracyOnly
         else:
             settings.mode = lg.TestMode.PerformanceOnly
+            settings.sample_concatenate_permutation = True
             
         settings.use_token_latencies = True
         
