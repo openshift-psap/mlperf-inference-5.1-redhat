@@ -1189,6 +1189,7 @@ if __name__ == "__main__":
         settings = lg.TestSettings()
         if SCENARIO == "Server":
             settings.scenario = lg.TestScenario.Server
+            settings.sample_concatenate_permutation = True
         else:
             settings.scenario = lg.TestScenario.Offline
             
