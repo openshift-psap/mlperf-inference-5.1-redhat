@@ -229,7 +229,7 @@ class VLLMSingleSUT:
             
             # Apply sorting options if requested
             batch = self._apply_batch_sorting(batch)
-            batch = self.bucket_and_pad_without_batching(batch)
+            #batch = self.bucket_and_pad_without_batching(batch)
             
             # Print debug information if requested
             if self.print_sorted_tokens or self.logger.isEnabledFor(logging.DEBUG):
@@ -665,7 +665,7 @@ class VLLMSingleSUTAPI:
             
             # Apply sorting if requested
             batch = self._apply_batch_sorting(batch)
-            batch = self.bucket_and_pad_without_batching(batch)
+            #batch = self.bucket_and_pad_without_batching(batch)
             
             # Debug information
             if self.print_sorted_tokens or self.logger.isEnabledFor(logging.DEBUG):
