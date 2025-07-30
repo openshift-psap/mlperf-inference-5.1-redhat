@@ -513,7 +513,7 @@ class VLLMSingleSUTAPI:
     """
     
     def __init__(self, model_name: str, dataset_path: str, api_server_url: str, 
-                 max_model_len: int = 2048, test_mode: str = "performance", 
+                 test_mode: str = "performance", 
                  enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", 
                  enable_nvtx: bool = False, print_histogram: bool = False, 
                  sort_by_length: bool = False, sort_by_token_contents: bool = False, 
@@ -527,7 +527,6 @@ class VLLMSingleSUTAPI:
         self.model_name = model_name
         self.dataset_path = dataset_path
         self.api_server_url = api_server_url.rstrip('/')
-        self.max_model_len = max_model_len
         self.test_mode = test_mode
         
         # Performance and debugging options
@@ -1150,7 +1149,6 @@ if __name__ == "__main__":
                 model_name=MODEL_NAME,
                 dataset_path=DATASET_PATH,
                 api_server_url=args.api_server_url,
-                max_model_len=MAX_MODEL_LEN,
                 test_mode=TEST_MODE,
                 enable_profiler=args.enable_profiler,
                 profiler_dir=args.profiler_dir,
