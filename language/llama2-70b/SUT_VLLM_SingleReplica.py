@@ -360,7 +360,7 @@ class VLLMSingleSUT:
             query_index = original_query_indexes[i]
             
             # Log output information
-            self.logger.debug(f"Query ID: {query_id}, Index: {query_index:5d}, Tokens: {token_count:5d}")
+            self.logger.info(f"Query ID: {query_id}, Index: {query_index:5d}, Tokens: {token_count:5d}")
             
             # Create response based on test mode
             #if self.test_mode == "accuracy":
@@ -738,7 +738,7 @@ class VLLMSingleSUTAPI:
             token_count = len(token_ids)
             
             # Debug logging
-            self.logger.debug(f"API Query ID: {query_id}, Index: {query_index}, Tokens: {token_count}")
+            self.logger.info(f"API Query ID: {query_id}, Index: {query_index}, Tokens: {token_count}")
             
             # Create response based on test mode
             #if self.test_mode == "accuracy":
