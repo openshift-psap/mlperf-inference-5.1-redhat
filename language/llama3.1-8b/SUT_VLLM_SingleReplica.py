@@ -1012,11 +1012,7 @@ if __name__ == "__main__":
     EngineArgs.add_cli_args(parser)
 
     parser.set_defaults(max_model_len=131062,
-        trust_remote_code=True,
-        max_num_seqs=512,
-        long_prefill_token_threshold=256,
-        max_num_partial_prefills=1,
-        cuda_graph_sizes=[3000,512],block_size=16)
+        trust_remote_code=True)
     
     # Model and Data Configuration
     model_group = parser.add_argument_group('Model and Data')
