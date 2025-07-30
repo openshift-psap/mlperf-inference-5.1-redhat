@@ -1541,6 +1541,7 @@ if __name__ == "__main__":
         logging.info(f"Test Mode: {TEST_MODE}")
         logging.info(f"Samples: {NUM_SAMPLES}")
         logging.info(f"Batch Size: {BATCH_SIZE}")
+        logging.info(f"KV Cache Dtype: {KV_CACHE_DTYPE}")
         if SCENARIO == "Server":
             logging.info(f"Server Workers: {NUM_WORKERS}")
         if args.audit_conf:

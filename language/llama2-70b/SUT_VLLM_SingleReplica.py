@@ -97,7 +97,7 @@ class VLLMSingleSUT:
                  enable_nvtx: bool = False, print_histogram: bool = False, 
                  sort_by_length: bool = False, sort_by_token_contents: bool = False, 
                  print_sorted_tokens: bool = False, print_timing: bool = False, 
-                 max_num_batched_tokens: int = None):
+                 max_num_batched_tokens: int = None, kv_cache_dtype: str = "auto"):
         
         # Initialize per-instance logger
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -113,6 +113,7 @@ class VLLMSingleSUT:
         self.pipeline_parallel_size = pipeline_parallel_size
         self.swap_space = swap_space
         self.max_num_batched_tokens = max_num_batched_tokens
+        self.kv_cache_dtype = kv_cache_dtype
         
         # Performance and debugging options
         self.enable_profiler = enable_profiler
@@ -159,7 +160,8 @@ class VLLMSingleSUT:
             pipeline_parallel_size=self.pipeline_parallel_size,
             swap_space=self.swap_space,
             disable_log_stats=False,
-            max_num_batched_tokens=self.max_num_batched_tokens
+            max_num_batched_tokens=self.max_num_batched_tokens,
+            kv_cache_dtype=self.kv_cache_dtype
         )
         
         self.logger.info("Model loaded successfully.")
@@ -854,7 +856,7 @@ class VLLMSingleSUTServer:
                  enable_nvtx: bool = False, print_histogram: bool = False, 
                  sort_by_length: bool = False, sort_by_token_contents: bool = False, 
                  print_sorted_tokens: bool = False, print_timing: bool = False, 
-                 max_num_batched_tokens: int = None):
+                 max_num_batched_tokens: int = None, kv_cache_dtype: str = "auto"):
         
         # Initialize per-instance logger
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -870,6 +872,7 @@ class VLLMSingleSUTServer:
         self.pipeline_parallel_size = pipeline_parallel_size
         self.swap_space = swap_space
         self.max_num_batched_tokens = max_num_batched_tokens
+        self.kv_cache_dtype = kv_cache_dtype
         
         # Performance and debugging options
         self.enable_profiler = enable_profiler
@@ -911,7 +914,8 @@ class VLLMSingleSUTServer:
             pipeline_parallel_size=self.pipeline_parallel_size,
             swap_space=self.swap_space,
             disable_log_stats=False,
-            max_num_batched_tokens=self.max_num_batched_tokens
+            max_num_batched_tokens=self.max_num_batched_tokens,
+            kv_cache_dtype=self.kv_cache_dtype
         )
         
         self.logger.info("Server model loaded successfully.")
@@ -1086,6 +1090,9 @@ if __name__ == "__main__":
                           help="Batch size for processing")
     perf_group.add_argument("--max-num-batched-tokens", type=int, default=None, 
                           help="Maximum number of batched tokens for vLLM")
+    perf_group.add_argument("--kv-cache-dtype", type=str, default="auto", 
+                          choices=["auto", "fp8", "fp16", "fp32"], 
+                          help="Data type for KV cache (fp8 for memory efficiency)")
     
     # Scenario and Testing
     scenario_group = parser.add_argument_group('Scenario and Testing')
@@ -1185,6 +1192,7 @@ if __name__ == "__main__":
     PIPELINE_PARALLEL_SIZE = args.pipeline_parallel_size
     SWAP_SPACE = args.swap_space
     MAX_NUM_BATCHED_TOKENS = args.max_num_batched_tokens
+    KV_CACHE_DTYPE = args.kv_cache_dtype
 
     # Validation
     if DATASET_PATH is None:
@@ -1246,7 +1254,8 @@ if __name__ == "__main__":
                 sort_by_token_contents=args.sort_by_token_contents,
                 print_sorted_tokens=args.print_sorted_tokens,
                 print_timing=args.print_timing,
-                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS
+                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+                kv_cache_dtype=KV_CACHE_DTYPE
             )
         else:
             # Use local model for offline scenario
@@ -1269,7 +1278,8 @@ if __name__ == "__main__":
                 sort_by_token_contents=args.sort_by_token_contents,
                 print_sorted_tokens=args.print_sorted_tokens,
                 print_timing=args.print_timing,
-                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS
+                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+                kv_cache_dtype=KV_CACHE_DTYPE
             )
 
         # ====================================================================
@@ -1320,6 +1330,7 @@ if __name__ == "__main__":
         logging.info(f"Test Mode: {TEST_MODE}")
         logging.info(f"Samples: {NUM_SAMPLES}")
         logging.info(f"Batch Size: {BATCH_SIZE}")
+        logging.info(f"KV Cache Dtype: {KV_CACHE_DTYPE}")
         if args.audit_conf:
             logging.info(f"Audit Config: {args.audit_conf}")
         if args.enable_profiler:
