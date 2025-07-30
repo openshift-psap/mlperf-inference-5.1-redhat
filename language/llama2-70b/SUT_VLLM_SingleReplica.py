@@ -363,24 +363,24 @@ class VLLMSingleSUT:
             self.logger.debug(f"Query ID: {query_id}, Index: {query_index:5d}, Tokens: {token_count:5d}")
             
             # Create response based on test mode
-            if self.test_mode == "accuracy":
-                # For accuracy testing, include actual token data
-                token_array = np.array(token_ids, dtype=np.int32)
-                token_bytes = token_array.tobytes()
-                response_data = token_array.ctypes.data
-                response_size = len(token_bytes)
-                response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
-                lg.QuerySamplesComplete([response])
-            else:
-                # For performance testing, only token count matters
-                response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
+            #if self.test_mode == "accuracy":
+            # For accuracy testing, include actual token data
+            token_array = np.array(token_ids, dtype=np.int32)
+            token_bytes = token_array.tobytes()
+            response_data = token_array.ctypes.data
+            response_size = len(token_bytes)
+            response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+            lg.QuerySamplesComplete([response])
+            #else:
+            #    # For performance testing, only token count matters
+            #    response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
             
-            if self.test_mode == "performance":
-                responses_to_loadgen.append(response)
+            #if self.test_mode == "performance":
+            #    responses_to_loadgen.append(response)
         
         # Send responses to Loadgen
-        if responses_to_loadgen and self.test_mode == "performance":
-            lg.QuerySamplesComplete(responses_to_loadgen)
+        #if responses_to_loadgen and self.test_mode == "performance":
+        #    lg.QuerySamplesComplete(responses_to_loadgen)
         
         self.batch_counter += 1
         
@@ -741,22 +741,22 @@ class VLLMSingleSUTAPI:
             self.logger.debug(f"API Query ID: {query_id}, Index: {query_index}, Tokens: {token_count}")
             
             # Create response based on test mode
-            if self.test_mode == "accuracy":
-                token_array = np.array(token_ids, dtype=np.int32)
-                token_bytes = token_array.tobytes()
-                response_data = token_array.ctypes.data
-                response_size = len(token_bytes)
-                response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
-                lg.QuerySamplesComplete([response])
-            else:
-                response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
+            #if self.test_mode == "accuracy":
+            token_array = np.array(token_ids, dtype=np.int32)
+            token_bytes = token_array.tobytes()
+            response_data = token_array.ctypes.data
+            response_size = len(token_bytes)
+            response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
+            lg.QuerySamplesComplete([response])
+            #else:
+            #    response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
             
-            if self.test_mode == "performance":
-                responses_to_loadgen.append(response)
+            #if self.test_mode == "performance":
+            #    responses_to_loadgen.append(response)
         
         # Send responses to Loadgen
-        if responses_to_loadgen and self.test_mode == "performance":
-            lg.QuerySamplesComplete(responses_to_loadgen)
+        #if responses_to_loadgen and self.test_mode == "performance":
+        #    lg.QuerySamplesComplete(responses_to_loadgen)
 
     def _handle_api_batch_error(self, original_query_ids, batch_start, batch_times, batch_idx, batch_size):
         """Handle errors in API batch processing"""
@@ -837,190 +837,6 @@ class VLLMSingleSUTAPI:
             self.metrics_thread.join()
             self.logger.info("Metrics collection thread stopped")
 
-
-class VLLMSingleSUTServer:
-    """
-    vLLM Server Scenario SUT Implementation
-    
-    This class implements the MLPerf Server scenario using a similar approach
-    to the offline scenario but designed for true server-style workloads.
-    Note: This is a simplified implementation and may need refinement for
-    full server scenario compliance.
-    """
-    
-    def __init__(self, model_name: str, dataset_path: str, max_model_len: int = None, 
-                 gpu_memory_utilization: float = 0.9, max_num_seqs: int = 512, 
-                 test_mode: str = "performance", num_gpus: int = 1, 
-                 pipeline_parallel_size: int = 0, swap_space: int = 0, 
-                 enable_profiler: bool = False, profiler_dir: str = "./torch_profiler_logs", 
-                 enable_nvtx: bool = False, print_histogram: bool = False, 
-                 sort_by_length: bool = False, sort_by_token_contents: bool = False, 
-                 print_sorted_tokens: bool = False, print_timing: bool = False, 
-                 max_num_batched_tokens: int = None, kv_cache_dtype: str = "auto"):
-        
-        # Initialize per-instance logger
-        self.logger = logging.getLogger(self.__class__.__name__)
-        
-        # Store configuration (similar to VLLMSingleSUT)
-        self.model_name = model_name
-        self.dataset_path = dataset_path
-        self.max_model_len = max_model_len
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.max_num_seqs = max_num_seqs
-        self.test_mode = test_mode
-        self.num_gpus = num_gpus
-        self.pipeline_parallel_size = pipeline_parallel_size
-        self.swap_space = swap_space
-        self.max_num_batched_tokens = max_num_batched_tokens
-        self.kv_cache_dtype = kv_cache_dtype
-        
-        # Performance and debugging options
-        self.enable_profiler = enable_profiler
-        self.profiler_dir = profiler_dir
-        self.enable_nvtx = enable_nvtx
-        self.print_histogram = print_histogram
-        self.sort_by_length = sort_by_length
-        self.sort_by_token_contents = sort_by_token_contents
-        self.print_sorted_tokens = print_sorted_tokens
-        self.print_timing = print_timing
-        
-        # Runtime state
-        self.profiler = None
-        self.batch_counter = 0
-        
-        # Load dataset
-        self.data_object = Dataset(self.model_name, dataset_path=self.dataset_path, 
-                                 total_sample_count=24576, device="cpu")
-        self.logger.info("Server Dataset loaded: %d samples", len(self.data_object.input_ids))
-        
-        # Initialize the model
-        self._load_model()
-
-    def _load_model(self):
-        """Load the vLLM model for server scenario (same as offline)"""
-        if self.enable_nvtx:
-            torch.cuda.nvtx.range_push("server_loadmodel")
-            
-        self.logger.info(f"Loading server model '{self.model_name}' with {self.num_gpus} GPU(s)...")
-        
-        # Create LLM instance (same configuration as offline)
-        self.llm = LLM(
-            model=self.model_name,
-            trust_remote_code=True,
-            gpu_memory_utilization=self.gpu_memory_utilization,
-            tensor_parallel_size=self.num_gpus,
-            max_model_len=self.max_model_len,
-            max_num_seqs=self.max_num_seqs,
-            pipeline_parallel_size=self.pipeline_parallel_size,
-            swap_space=self.swap_space,
-            disable_log_stats=False,
-            max_num_batched_tokens=self.max_num_batched_tokens,
-            kv_cache_dtype=self.kv_cache_dtype
-        )
-        
-        self.logger.info("Server model loaded successfully.")
-        
-        # Configure sampling parameters
-        self.sampling_params = SamplingParams(
-            temperature=0.0,
-            max_tokens=1024,
-        )
-        
-        # Display configuration
-        print("-" * 60)
-        print("vLLM SERVER MODEL CONFIGURATION")
-        print("-" * 60)
-        try:
-            engine_instance = self.llm.llm_engine 
-            print("vLLM Config:", engine_instance.vllm_config)
-            print("Model Config:", engine_instance.vllm_config.model_config)
-            print("Cache Config:", engine_instance.vllm_config.cache_config)
-        except Exception as e:
-            print(f"Error accessing server model configuration: {e}")
-        print("-" * 60)
-
-        if self.enable_nvtx:
-            torch.cuda.nvtx.range_pop()
-
-    def issue_query(self, query_samples: List['lg.QuerySample']):
-        """
-        Process queries for server scenario
-        
-        Note: This implementation is similar to offline but could be enhanced
-        for true server scenario requirements like streaming responses.
-        """
-        # For now, use the same batching approach as offline
-        # In a full server implementation, this might handle queries individually
-        # or use different batching strategies
-        
-        batch_size = BATCH_SIZE
-        total_samples = len(query_samples)
-        num_batches = (total_samples + batch_size - 1) // batch_size
-        
-        self.logger.info(f"Server processing {total_samples} queries in {num_batches} batches")
-        
-        # Process batches (similar to offline implementation)
-        for batch_idx in range(num_batches):
-            start = batch_idx * batch_size
-            end = min((batch_idx + 1) * batch_size, total_samples)
-            batch = query_samples[start:end]
-            
-            try:
-                self._process_server_batch(batch_idx, batch)
-            except Exception as e:
-                self.logger.error(f"Error processing server batch {batch_idx}: {e}")
-                # Send error responses
-                for q in batch:
-                    response = lg.QuerySampleResponse(q.id, 0, 0, 0)
-                    lg.QuerySamplesComplete([response])
-
-    def _process_server_batch(self, batch_idx, batch):
-        """Process a batch in server mode"""
-        # Prepare prompts
-        prompts_to_process = [TokensPrompt(prompt_token_ids=self.data_object.input_ids[q.index]) 
-                            for q in batch]
-        original_query_ids = [q.id for q in batch]
-        
-        # Generate responses
-        batch_label = f"server_batch_{self.batch_counter:04d}_size_{len(batch)}"
-        
-        if self.enable_nvtx:
-            torch.cuda.nvtx.range_push(batch_label)
-        
-        with torch.profiler.record_function(batch_label):
-            outputs = self.llm.generate(prompts_to_process, self.sampling_params)
-        
-        if self.enable_nvtx:
-            torch.cuda.nvtx.range_pop()
-        
-        # Process outputs and send responses
-        responses_to_loadgen = []
-        for i, output in enumerate(outputs):
-            token_ids = output.outputs[0].token_ids
-            token_count = len(token_ids)
-            query_id = original_query_ids[i]
-            
-            self.logger.debug(f"Server Query ID: {query_id}, Tokens: {token_count}")
-            
-            if self.test_mode == "accuracy":
-                token_array = np.array(token_ids, dtype=np.int32)
-                token_bytes = token_array.tobytes()
-                response_data = token_array.ctypes.data
-                response_size = len(token_bytes)
-                response = lg.QuerySampleResponse(query_id, response_data, response_size, token_count)
-            else:
-                response = lg.QuerySampleResponse(query_id, 0, 0, token_count)
-            
-            responses_to_loadgen.append(response)
-        
-        if responses_to_loadgen:
-            lg.QuerySamplesComplete(responses_to_loadgen)
-        
-        self.batch_counter += 1
-
-    def flush_queries(self):
-        """MLPerf Loadgen callback for server scenario"""
-        self.logger.info("Server SUT flush queries called")
 
 
 # ============================================================================
@@ -1232,30 +1048,6 @@ if __name__ == "__main__":
                 print_timing=args.print_timing,
                 enable_metrics_csv=args.enable_metrics_csv,
                 metrics_csv_path=args.metrics_csv_path
-            )
-        elif SCENARIO == "Server":
-            # Use server scenario implementation
-            logging.info("Using local vLLM model for Server scenario")
-            sut = VLLMSingleSUTServer(
-                model_name=MODEL_NAME,
-                dataset_path=DATASET_PATH,
-                max_model_len=MAX_MODEL_LEN,
-                gpu_memory_utilization=GPU_MEM_UTIL,
-                max_num_seqs=MAX_NUM_SEQS,
-                test_mode=TEST_MODE,
-                num_gpus=NUM_GPUS,
-                pipeline_parallel_size=PIPELINE_PARALLEL_SIZE,
-                swap_space=SWAP_SPACE,
-                enable_profiler=args.enable_profiler,
-                profiler_dir=args.profiler_dir,
-                enable_nvtx=args.enable_nvtx,
-                print_histogram=args.print_histogram,
-                sort_by_length=args.sort_by_length,
-                sort_by_token_contents=args.sort_by_token_contents,
-                print_sorted_tokens=args.print_sorted_tokens,
-                print_timing=args.print_timing,
-                max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
-                kv_cache_dtype=KV_CACHE_DTYPE
             )
         else:
             # Use local model for offline scenario
