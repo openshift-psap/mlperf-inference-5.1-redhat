@@ -54,6 +54,7 @@ python3 SUT_VLLM_SingleReplica.py --model ${MODEL_DIR} --dataset_path ${DATASET_
 echo "Accuracy run completed"
 echo "Evaluating Accuracy "
 python3 evaluation.py  --mlperf-accuracy-file ${ACCURACY_DIR}/mlperf_log_accuracy.json  --dataset-file ${DATASET_PATH}  --dtype int32 >& ${ACCURACY_DIR}/accuracy.txt 
+sed -i -E 's/np\.int64\(([0-9]+)\)/\1/g' ${ACCURACY_DIR}/accuracy.txt
 cat ${ACCURACY_DIR}/accuracy.txt
 
 echo "Run performance"
