@@ -43,7 +43,7 @@ python3 SUT_VLLM_SingleReplica.py --model ${MODEL_DIR} --dataset_path ${DATASET_
          >& ${COMPLIANCE_DIR}/${FILENAME}
 
 echo "Checking compliance"
-python3 ../../compliance/nvidia/TEST06/run_verification.py -c ${COMPLIANCE_DIR} -o {COMPLIANCE_DIR} -s Offline
+python3 ../../compliance/nvidia/TEST06/run_verification.py -c ${COMPLIANCE_DIR} -o ${COMPLIANCE_DIR} -s Offline
 
 echo "Run accuracy"
 FILENAME="offline_accuracy_${GPU}_llama3.18b.log"
