@@ -934,7 +934,6 @@ if __name__ == "__main__":
             settings.mode = lg.TestMode.AccuracyOnly
         else:
             settings.mode = lg.TestMode.PerformanceOnly
-            settings.sample_concatenate_permutation = True
             
         settings.use_token_latencies = True
         
