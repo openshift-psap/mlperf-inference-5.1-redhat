@@ -12,6 +12,12 @@ if [[ "${GPU}" == "H100" ]];then
    USER_CONF="h100_user.conf"
 fi
 
+if [[ "${GPU}" == "L40S" ]];then 
+   export VLLM_ATTENTION_BACKEND=FLASHINFER
+   export TORCH_CUDA_ARCH_LIST=8.9
+fi
+
+
 echo "Using user-conf ${USER_CONF}"
 
 
