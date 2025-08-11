@@ -1,19 +1,68 @@
-# ============================================================================
-# README_HARNESS.md
-#
-# This documentation was generated and refactored with the help of AI (OpenAI GPT-4),
-# with additional modifications and review by the author: <Naveen Miriyalu nmiriyal@redhat.com>
-#
-# Disclaimer: This documentation is provided as-is, without warranty of any kind.
-# Please review and test before using in production or submitting to MLPerf.
-# ============================================================================
+### ======================================================================
+### README_HARNESS.md
+### Author: <Naveen Miriyalu nmiriyal@redhat.com>
+###
+### =======================================================================
 
 # MLPerf vLLM Harness Usage Guide
 
-This harness supports running vLLM models with MLPerf Loadgen in both offline and server scenarios. It supports:
-- Local vLLM (direct model loading)
-- vLLM API (remote inference)
-- MLPerf Server scenario with async batching and multi-worker support
+This harness supports running vLLM models with MLPerf Loadgen in both offline and server scenarios. The harness for Server and Offline are maintained in two different python code files:
+- Offline harness (SUT_VLLM_SingleReplica.py)
+  - Offline harness supports running via an LLM API class or sending requests to an OpenAI API endpoint
+  - Specifying an --api-server-url would ensure the harness talks to an API endpoint
+  - For offline submissions , we use the LLM API class to submit the queries 
+- Server harness (SUT_VLLM_SingleReplica_Server.py)
+  - Server currently supports only an OpenAI API endpoint
+  - Additionally you could set the "target_qps" and "coalesce" controlling loadgen's behavior
+- Additionally there are scripts named
+  - run_server_submission.sh - Helps to spin up a vllm server and then start the harness and kills the vllm server after the run is completed
+  - run_offline_submission.sh - Runs the entire flow to complete a submission using the LLM API class.
+- The offline scenario output logs contain the command line used to run within the log
+   
+> [!TIP]
+> These scripts would need slight modifications to specify the right optimizations for the H100 and the L40S GPUs
+> Run `SUT_VLLM_SingleReplica*.py -h` if you want a whole list of options the harness supports
+
+## Running the harness for MLPerf Server Scenario 
+### 1. On H100 [Specifying the optimized configuration used during final submission]
+- A. Spin up the vllm server<br>
+`vllm serve --max-model-len 131072 --disable-log-requests --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens 1024 --max-num-seq    s 512 --cuda-graph-sizes 4232 --long-prefill-token-threshold 256`
+- B. Run the harness for performance <br>
+`
+python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-path ${DATASET_PATH} \
+         --user-conf user.conf  --test-mode performance --target-qps 39.5 --output-log-dir ${MLPERF_OUTPUT_DIR}/ \
+          --api-server-url http://localhost:8000 --coalesce >& output.log 
+`
+- C. Run the harness for accuracy <br>
+`
+python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-path ${DATASET_PATH} \
+         --user-conf user.conf  --test-mode accuracy --target-qps 39.5 --output-log-dir ${MLPERF_OUTPUT_DIR}/ \
+          --api-server-url http://localhost:8000 --coalesce >& output.log 
+`
+- D. Alternatively we could use the `run_server_submission.sh'
+  - Use it with the following command line <br> `nohup bash run_server_submission.sh H100 <MODEL_PATH> <DATASET_PATH> <OUTPUT_DIR> 39.5 auto <accuracy|performance|compliance>  --max-model-len 131072 --disable-log-requests   --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens  1024 --max-num-seqs 512 --cuda-graph-sizes 4232  --long-prefill-token-threshold 256 & `
+  - Additionally in `run_server_submission.sh` do specify the `--coalesce` for the performance run
+    ```
+    117 if [[ "${CHECK}" == "performance" ]];then
+    118 start_vllm performance 0 ${MODEL_DIR} ${CMD}
+    119 sleep  50
+    120 echo "Run performance"
+    121 FILENAME="offline_performance_${GPU}_llama3.18b.log"
+    122 python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_DIR} --dataset-path ${DATASET_PATH} \
+    123         --user-conf user.conf  --test-mode performance --target-qps ${TARGET_QPS} --output-log-dir ${PERF_DIR}/ \
+    124         --api-server-url http://localhost:8000 --coalesce\
+    125         >& ${PERF_DIR}/${FILENAME}
+    126 echo "Performance run completed"
+    127 stop_vllm
+    ```
+
+  - The script should set the necesary environment variables based on the GPU used 
+
+
+
+
+
+
 
 ## Command-Line Options
 
@@ -277,7 +326,6 @@ python SUT_VLLM_SingleReplica.py \
 
 ## Notes
 - For API mode, ensure the vLLM API server is running and accessible.
-- For server scenario, adjust `--num-workers` and `--batch-size` for your hardware.
 - All options can be listed with `python SUT_VLLM_SingleReplica.py --help`.
 
 ---
