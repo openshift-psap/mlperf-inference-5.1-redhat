@@ -4,6 +4,51 @@
 ### Description: Instructions to run the harness
 ### =======================================================================
 
+# Installation
+### A. Install "uv" to manage your environments
+[uv installation link ](https://docs.astral.sh/uv/getting-started/installation/#installation-methods)
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+### B. Create an environment and activate the environment
+```
+uv venv -p 3.10 mlperf
+source mlperf/bin/activate
+```
+### C. Install vLLM and pandas
+```
+ uv pip install vllm==0.10.0
+ uv pip install pandas
+```
+
+### D. Install loadgen 
+
+1. Clone the mlperf inference repository <br>
+2. [Loadgen installation instructions](../../loadgen/README_BUILD.md)
+3. The following steps were used to install loadgen
+
+```
+uv pip install pip
+uv pip install absl-py
+cd mlperf_inference/loadgen
+cd mlperf_inference/loadgen
+CFLAGS="-std=c++14 -O3" python -m pip install .
+```
+### E. Install flashinfer 
+```
+export CUDA_HOME=/usr/local/cuda-12.x
+uv pip install flashinfer-python==0.2.8
+```
+> [!NOTE]
+> Flashinfer needs CUDA installed
+
+### F. Packages to calculate accuracy
+1. Please install the required packages [requirements](./requirements.txt)
+2. ```
+   uv pip install nltk sentencepiece rouge-score evaluate accelerate
+   ```
+
+   
 # MLPerf vLLM Harness Usage Guide
 
 This harness supports running vLLM models with MLPerf Loadgen in both offline and server scenarios. The harness for Server and Offline are maintained in two different python code files:
@@ -23,45 +68,69 @@ This harness supports running vLLM models with MLPerf Loadgen in both offline an
 > These scripts would need slight modifications to specify the right optimizations for the H100 and the L40S GPUs
 > Run `SUT_VLLM_SingleReplica*.py -h` if you want a whole list of options the harness supports
 
+> [!IMPORTANT]
+> On the L40S please set the following environment variables 
+> ```
+> export TORCH_CUDA_ARCH_LIST="8.9"
+> export VLLM_ATTENTION_BACKEND=FLASHINFER
+> ```
+<br>
+
+> [!TIP]
+> For the server scenario , setting `ulimit -n 65536` might be useful.
+> Please check for any other resource limit .  
+
+<br>
+<br>
+
 ## Running the harness for MLPerf Server Scenario 
 ### 1. On H100 [Specifying the optimized configuration used during final submission]
 - A. Spin up the vllm server<br>
-`vllm serve --max-model-len 131072 --disable-log-requests --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens 1024 --max-num-seq    s 512 --cuda-graph-sizes 4232 --long-prefill-token-threshold 256`
+```
+vllm serve --max-model-len 131072 --disable-log-requests --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens 1024 --max-num-seq    s 512 --cuda-graph-sizes 4232 --long-prefill-token-threshold 256`
+```
 - B. Run the harness for performance <br>
-`
+```
 python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-path ${DATASET_PATH} \
          --user-conf user.conf  --test-mode performance --target-qps 39.5 --output-log-dir ${MLPERF_OUTPUT_DIR}/ \
           --api-server-url http://localhost:8000 --coalesce >& output.log 
-`
+```
 - C. Run the harness for accuracy <br>
-`
+```
 python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_PATH} --dataset-path ${DATASET_PATH} \
          --user-conf user.conf  --test-mode accuracy --target-qps 39.5 --output-log-dir ${MLPERF_OUTPUT_DIR}/ \
           --api-server-url http://localhost:8000 --coalesce >& output.log 
-`
+```
 - D. Alternatively we could use the `run_server_submission.sh'
-  - Use it with the following command line <br> `nohup bash run_server_submission.sh H100 <MODEL_PATH> <DATASET_PATH> <OUTPUT_DIR> 39.5 auto <accuracy|performance|compliance>  --max-model-len 131072 --disable-log-requests   --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens  1024 --max-num-seqs 512 --cuda-graph-sizes 4232  --long-prefill-token-threshold 256 & `
+  - Use it with the following command line <br>
+    ```
+    nohup bash run_server_submission.sh H100 <MODEL_PATH> <DATASET_PATH> <OUTPUT_DIR> 39.5 auto <accuracy|performance|compliance>  --max-model-len 131072 --disable-log-requests   --max_seq_len_to_capture 1024 --block-size 16 --gpu-memory-utilization 0.91 --max-num-batched-tokens  1024 --max-num-seqs 512 --cuda-graph-sizes 4232  --long-prefill-token-threshold 256 &
+    ```
   - Additionally in `run_server_submission.sh` do specify the `--coalesce` for the performance run
     ```
-    117 if [[ "${CHECK}" == "performance" ]];then
-    118 start_vllm performance 0 ${MODEL_DIR} ${CMD}
-    119 sleep  50
-    120 echo "Run performance"
-    121 FILENAME="offline_performance_${GPU}_llama3.18b.log"
-    122 python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_DIR} --dataset-path ${DATASET_PATH} \
-    123         --user-conf user.conf  --test-mode performance --target-qps ${TARGET_QPS} --output-log-dir ${PERF_DIR}/ \
-    124         --api-server-url http://localhost:8000 --coalesce\
-    125         >& ${PERF_DIR}/${FILENAME}
-    126 echo "Performance run completed"
-    127 stop_vllm
+    if [[ "${CHECK}" == "performance" ]];then
+      start_vllm performance 0 ${MODEL_DIR} ${CMD}
+      sleep  50
+      echo "Run performance"
+      FILENAME="offline_performance_${GPU}_llama3.18b.log"
+      python3 SUT_VLLM_SingleReplica_Server.py --model-name ${MODEL_DIR} --dataset-path ${DATASET_PATH} \
+             --user-conf user.conf  --test-mode performance --target-qps ${TARGET_QPS} --output-log-dir ${PERF_DIR}/ \
+             --api-server-url http://localhost:8000 --coalesce\
+             >& ${PERF_DIR}/${FILENAME}
+      echo "Performance run completed"
+      stop_vllm
+      sleep 30
+    fi
     ```
 
   - The script should set the neccesary environment variables based on the GPU used 
 ### 2. On L40S [Specifying the optimized configuration used during final submission]
 - A. Run `run_server_submission.sh` <br>
- ` bash run_server_submission.sh L40S <MODEL_PATH> <DATASET_PATH>  <OUTPUT_DIR>  9.3  fp8 performance  --kv-cache-dtype fp8 --max-model-len 2668   --gpu-memory-utilization 0.96 --disable-log-requests  `
+ ```
+ bash run_server_submission.sh L40S <MODEL_PATH> <DATASET_PATH>  <OUTPUT_DIR>  9.3  fp8 performance  --kv-cache-dtype fp8 --max-model-len 2668   --gpu-memory-utilization 0.96 --disable-log-requests
+```
 - B. Alternatively <br>
-  - use steps A and B as mentioned for H100. Not that we do not use `--coalesce' for the L40s while running the harness
+  - Use steps A and B as mentioned for H100. Not that we do not use `--coalesce' for the L40s while running the harness
 
 
 ## Running the harness for MLPerf Offline Scenario 
